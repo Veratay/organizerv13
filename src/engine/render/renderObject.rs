@@ -7,12 +7,12 @@ use web_sys::{WebGl2RenderingContext, WebGlBuffer, WebGlVertexArrayObject, WebGl
 
 use crate::{log_str, log_f32_arr, log_u16_arr};
 
-use super::{program::{create_program_from_src}};
+use super::{program::{create_program_from_src}, renderer::{Uniform, UniformBlock}};
 
 #[derive(Clone)]
 pub struct RenderObject {
     pub type_id:Rc<RenderType>,
-    //pub bounding_cuboid:Cuboid,
+    pub uniforms:UniformBlock,
     pub verticies:Vec<f32>,
     pub indicies:Vec<u16>
 }
@@ -22,11 +22,11 @@ pub struct RenderType {
     pub name:String,
     pub vertex_shader:String,
     pub fragment_shader:String,
-    //pub uniforms:Vec<Uniform>,
-    pub vertex_attribs:Vec<VertexAttrib>,
     pub instanced:Option<RenderObject>,
-    pub instance_attribs:Vec<VertexAttrib>,
     pub blank_vertex:Vec<f32>,
+    pub vertex_attribs:Vec<VertexAttrib>,
+    pub instance_attribs:Vec<VertexAttrib>,
+    pub uniform_attribs:Vec<UniformAttrib>,
     pub vertex_size:usize,
     pub verticies_chunk_min_size:usize,
     pub verticies_chunk_grow_factor:f32,
@@ -34,17 +34,6 @@ pub struct RenderType {
     pub indicies_chunk_min_size:usize,
     pub indicies_chunk_grow_factor:f32, 
     pub indicies_chunk_max_size:usize,
-}
-
-struct Unifrom {
-    name:String,
-    uniform:UniformType
-}
-
-enum UniformType {
-    Texture(WebGlTexture),
-    FLOAT(f32),
-    MATRIX(Matrix4<f32>)
 }
 
 impl PartialEq<RenderType> for RenderType {
@@ -121,6 +110,7 @@ impl RenderType {
         gl.bind_vertex_array(None);
 
         GlBuffers { 
+            gl:gl.clone(),
             vao:vao,
             vbo: vbo, 
             ibo: ibo, 
@@ -133,11 +123,24 @@ impl RenderType {
     }
 }
 
+#[derive(PartialEq)]
 pub(super) struct GlBuffers {
+    gl:WebGl2RenderingContext,
     vao:WebGlVertexArrayObject,
     vbo:WebGlBuffer,
     ibo:WebGlBuffer,
     instance:Option<WebGlBuffer>
+}
+
+impl Drop for GlBuffers {
+    fn drop(&mut self) {
+        self.gl.delete_buffer(Some(&self.vbo));
+        self.gl.delete_buffer(Some(&self.ibo));
+        if let Some(buffer) = &self.instance {
+            self.gl.delete_buffer(Some(&buffer))
+        }
+        self.gl.delete_vertex_array(Some(&self.vao));
+    }
 }
 
 impl GlBuffers {
@@ -204,6 +207,22 @@ impl GlBuffers {
     }
 }
 
+pub type TextureLayoutNumber = u32;
+
+#[derive(Clone, Copy)]
+pub enum AttributeRole {
+    Custom,
+    TextureCoordinate(TextureLayoutNumber)
+}
+
+#[derive(Clone, Copy)]
+pub enum UniformRole {
+    Custom,
+    Texture(TextureLayoutNumber),
+    Projection,
+    View
+}
+
 #[derive(Clone)]
 pub struct Vertex {
     pub vertex_data:Vec<f32>,
@@ -214,8 +233,14 @@ pub struct Vertex {
 #[derive(Clone)]
 pub struct VertexAttrib {
     pub name:String,
+    pub role:AttributeRole,
     pub data_type:ShaderDataTypes,
     pub count:i32
+}
+
+pub struct UniformAttrib {
+    pub name:String,
+    pub role:UniformRole
 }
 
 

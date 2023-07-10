@@ -1,2 +1,2 @@
-pub mod rect;
+// pub mod rect;
 pub mod image;

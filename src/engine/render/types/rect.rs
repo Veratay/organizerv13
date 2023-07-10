@@ -2,7 +2,7 @@ use std::{ rc::Rc, cell::RefCell};
 
 use nalgebra::{Transform3, Transform2, Point2};
 
-use crate::engine::render::{renderObject::{RenderType, VertexAttrib, ShaderDataTypes, RenderObject}, renderer::{Renderer, MappedRenderObject}};
+use crate::engine::render::{renderObject::{RenderType, VertexAttrib, ShaderDataTypes, RenderObject}, renderer::{Renderer, MappedRenderObject, AttributeRole}};
 
 thread_local! {
     static RECT_RENDER_TYPE: Rc<RenderType> = Rc::new(RenderType {
@@ -35,8 +35,18 @@ thread_local! {
             }"
         ),
         vertex_attribs:vec![
-            VertexAttrib { name: String::from("position"), data_type:ShaderDataTypes::FLOAT, count:2}, 
-            VertexAttrib { name: String::from("color"), data_type:ShaderDataTypes::FLOAT, count:4}
+            VertexAttrib { 
+                name: String::from("position"),
+                role:AttributeRole::Custom,
+                data_type:ShaderDataTypes::FLOAT, 
+                count:2
+            }, 
+            VertexAttrib { 
+                name: String::from("color"), 
+                role:AttributeRole::Custom,
+                data_type:ShaderDataTypes::FLOAT, 
+                count:4
+            }
         ],
         instance_attribs:Vec::new(),
         blank_vertex:vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
