@@ -24,6 +24,9 @@ extern "C" {
 
     #[wasm_bindgen(js_namespace = console, js_name = log)]
     fn log_array_buffer(s: &ArrayBuffer);
+
+    #[wasm_bindgen(js_namespace = console, js_name = log)]
+    fn log_i32(s: i32);
 }
 
 // #[wasm_bindgen]

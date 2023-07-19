@@ -10,15 +10,19 @@ use wasm_bindgen::prelude::*;
 use js_sys::{Float32Array, Uint16Array, ArrayBuffer};
 use wasm_bindgen::{JsCast};
 
+extern crate console_error_panic_hook;
+use std::panic;
+
 #[wasm_bindgen]
 pub fn texture_test() {
     log_str("starting texture test");
+    panic::set_hook(Box::new(console_error_panic_hook::hook));
     let document = web_sys::window().unwrap().document().unwrap();
     let canvas = document.get_element_by_id("rootCanvas").unwrap();
     let canvas: web_sys::HtmlCanvasElement = canvas.dyn_into::<web_sys::HtmlCanvasElement>().unwrap();
-    let renderer = Rc::new(RefCell::new(Renderer::new(canvas)));
+    let mut renderer = Renderer::new(canvas);
 
-    let mapped = renderer.borrow_mut().upload_texture(&RawTextureSource {
+    let mapped = renderer.upload_texture(&RawTextureSource {
         data:&[0u8, 255u8, 0u8, 255u8],
         format:crate::engine::render::texture::TextureFormat::RGBA,
         width:1,
@@ -26,12 +30,19 @@ pub fn texture_test() {
         unique:false
     });
 
-    Image::from_mapped(Transform2::from_matrix_unchecked(Matrix3::new(
-                0.5,0.0,0.5,
+    let mut img1 = Image::from_url(Transform2::from_matrix_unchecked(Matrix3::new(
+        0.5,0.0,0.5,
+        0.0,0.5,0.0,
+        0.0,0.0,1.0
+    )), String::from("./snout.jpeg"), &mut renderer);
+    renderer.render();
+
+    let mut img2 = Image::from_url(Transform2::from_matrix_unchecked(Matrix3::new(
+                0.5,0.0,-0.5,
                 0.0,0.5,0.0,
                 0.0,0.0,1.0
-            )), mapped, renderer.clone());
-    renderer.borrow().render();
+            )), String::from("./sniff.jpeg"), &mut renderer);
+    renderer.render();
 
     // Here we want to call `requestAnimationFrame` in a loop, but only a fixed
     // number of times. After it's done we want all our resources cleaned up. To
@@ -56,7 +67,17 @@ pub fn texture_test() {
         // requestAnimationFrame callback has fired.
         i += 1;
         
-        renderer.borrow().render();
+        img1.render(&mut renderer, Transform2::from_matrix_unchecked(Matrix3::new(
+            0.5,0.0,0.5,
+            0.0,0.5,0.0,
+            0.0,0.0,1.0
+        )));
+        img2.render(&mut renderer, Transform2::from_matrix_unchecked(Matrix3::new(
+            0.5,0.0,-0.5,
+            0.0,0.5,0.0,
+            0.0,0.0,1.0
+        )));
+        renderer.render();
 
         // Schedule ourself for another requestAnimationFrame callback.
         request_animation_frame(f.borrow().as_ref().unwrap());

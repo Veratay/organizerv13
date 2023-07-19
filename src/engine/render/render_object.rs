@@ -1,13 +1,12 @@
 use std::rc::Rc;
 
 use js_sys::{Uint16Array, ArrayBuffer, Float32Array};
-use nalgebra::{Transform3, Matrix4};
 use wasm_bindgen::UnwrapThrowExt;
-use web_sys::{WebGl2RenderingContext, WebGlBuffer, WebGlVertexArrayObject, WebGlProgram, WebGlTexture};
+use web_sys::{WebGl2RenderingContext, WebGlBuffer, WebGlVertexArrayObject, WebGlProgram};
 
 use crate::{log_str, log_f32_arr, log_u16_arr};
 
-use super::{program::{create_program_from_src}, renderer::{Uniform, UniformBlock}};
+use super::{program::create_program_from_src, renderer::UniformBlock};
 
 #[derive(Clone)]
 pub struct RenderObject {
@@ -38,9 +37,7 @@ pub struct RenderType {
 
 impl PartialEq<RenderType> for RenderType {
     fn eq(&self, other: &RenderType) -> bool {
-        self.name == other.name &&
-        self.vertex_shader == other.vertex_shader &&
-        self.fragment_shader == other.fragment_shader
+        self.name == other.name
     }
 }
 
@@ -56,6 +53,7 @@ impl RenderType {
         let vbo = gl.create_buffer().expect_throw("Error Creating VBO");
         gl.bind_buffer(WebGl2RenderingContext::ARRAY_BUFFER, Some(&vbo));
         unsafe {
+            log_f32_arr(js_sys::Float32Array::view(verticies));
             let buffer_view = match &self.instanced {
                 None => js_sys::Float32Array::view(&verticies),
                 Some(instanced_data) => js_sys::Float32Array::view(&instanced_data.verticies)
@@ -190,44 +188,37 @@ impl GlBuffers {
 
     pub fn log_data(&self, gl:&WebGl2RenderingContext, v_count:u32, i_count:u32) {
         //TODO: Check if this causes memory leak
-        unsafe {
-            let v_dst = Float32Array::new(&ArrayBuffer::new(v_count * 4));
-            let i_dst = Uint16Array::new(&ArrayBuffer::new(i_count * 2));
+        let v_dst = Float32Array::new(&ArrayBuffer::new(v_count * 4));
+        let i_dst = Uint16Array::new(&ArrayBuffer::new(i_count * 2));
 
-            gl.bind_buffer(WebGl2RenderingContext::ARRAY_BUFFER,Some(&self.vbo));
-            gl.bind_buffer(WebGl2RenderingContext::ELEMENT_ARRAY_BUFFER,Some(&self.ibo));
-            gl.get_buffer_sub_data_with_i32_and_array_buffer_view_and_dst_offset_and_length(WebGl2RenderingContext::ARRAY_BUFFER,0, &v_dst, 0, v_count);
-            gl.get_buffer_sub_data_with_i32_and_array_buffer_view_and_dst_offset_and_length(WebGl2RenderingContext::ELEMENT_ARRAY_BUFFER,0, &i_dst, 0, i_count);
+        gl.bind_buffer(WebGl2RenderingContext::ARRAY_BUFFER,Some(&self.vbo));
+        gl.bind_buffer(WebGl2RenderingContext::ELEMENT_ARRAY_BUFFER,Some(&self.ibo));
+        gl.get_buffer_sub_data_with_i32_and_array_buffer_view_and_dst_offset_and_length(WebGl2RenderingContext::ARRAY_BUFFER,0, &v_dst, 0, v_count);
+        gl.get_buffer_sub_data_with_i32_and_array_buffer_view_and_dst_offset_and_length(WebGl2RenderingContext::ELEMENT_ARRAY_BUFFER,0, &i_dst, 0, i_count);
 
-            log_str("verticies");
-            log_f32_arr(v_dst);
-            log_str("indicies");
-            log_u16_arr(i_dst);
-        }
+        log_str("verticies");
+        log_f32_arr(v_dst);
+        log_str("indicies");
+        log_u16_arr(i_dst);
     }
 }
 
 pub type TextureLayoutNumber = u32;
 
 #[derive(Clone, Copy)]
+#[allow(unused)]
 pub enum AttributeRole {
     Custom,
-    TextureCoordinate(TextureLayoutNumber)
+    TextureCoordinate
 }
 
 #[derive(Clone, Copy)]
+#[allow(unused)]
 pub enum UniformRole {
     Custom,
-    Texture(TextureLayoutNumber),
+    Texture,
     Projection,
     View
-}
-
-#[derive(Clone)]
-pub struct Vertex {
-    pub vertex_data:Vec<f32>,
-    pub instance_data:Vec<f32>,
-    pub index_data:Vec<u16>
 }
 
 #[derive(Clone)]

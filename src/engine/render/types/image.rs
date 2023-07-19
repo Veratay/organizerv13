@@ -1,9 +1,8 @@
 use std::{ rc::Rc, cell::RefCell};
 
-use js_sys::Map;
-use nalgebra::{Transform3, Transform2, Point2};
+use nalgebra::{Transform2, Point2};
 
-use crate::engine::render::{renderObject::{RenderType, VertexAttrib, ShaderDataTypes, RenderObject, UniformAttrib, UniformRole, AttributeRole}, renderer::{Renderer, MappedRenderObject, UniformBlock, Uniform, MappedTexture}};
+use crate::engine::render::{render_object::{RenderType, VertexAttrib, ShaderDataTypes, RenderObject, UniformAttrib, UniformRole, AttributeRole}, renderer::{Renderer, MappedRenderObject, UniformBlock, Uniform, MappedTexture}};
 
 thread_local! {
     static IMAGE_RENDER_TYPE: Rc<RenderType> = Rc::new(RenderType {
@@ -54,13 +53,13 @@ thread_local! {
         uniform_attribs:vec![
             UniformAttrib {
                 name:String::from("texture0"),
-                role:UniformRole::Texture(0)
+                role:UniformRole::Texture
             }
         ],
         instance_attribs:Vec::new(),
         blank_vertex:vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        vertex_size:6,
-        verticies_chunk_min_size:1000,
+        vertex_size:4,
+        verticies_chunk_min_size:8,
         verticies_chunk_grow_factor:1.1,
         verticies_chunk_max_size:2000,
         indicies_chunk_min_size:1000,
@@ -72,15 +71,16 @@ thread_local! {
 pub struct Image {
     pos:Transform2<f32>,
     obj:MappedRenderObject,
-    img:MappedTexture
+    img:MappedTexture,
+    img_valid:bool
 }
 
 impl Image {
-    pub fn from_url(transform:Transform2<f32>, url:String, renderer:Rc<RefCell<Renderer>>) -> Result<Self,()> {
-        let img = renderer.borrow_mut().upload_image_from_url(url)?;
+    pub fn from_url(transform:Transform2<f32>, url:String, renderer:&mut Renderer) -> Self {
+        let img = renderer.upload_image_from_url(url);
 
-        let (minx,miny) = img.get_texcoord(0f32, 0f32);
-        let (maxx, maxy) = img.get_texcoord(1.0, 1.0);
+        let (minx,miny) = img.get_texcoord(&renderer,0f32, 0f32);
+        let (maxx, maxy) = img.get_texcoord(&renderer,1.0, 1.0);
 
         let v0:Point2<f32> = transform * Point2::<f32>::new(1.0, 1.0);
         let v1:Point2<f32> = transform * Point2::<f32>::new(-1.0, 1.0);
@@ -103,15 +103,17 @@ impl Image {
             indicies:indicies
         };
 
-        let mapped = renderer.borrow_mut().add(render_object);
+        let mapped = MappedRenderObject::new(renderer, render_object);
 
-        Ok(Self { pos:transform, obj:mapped, img:img  })
+        let valid = img.valid();
+
+        Self { pos:transform, obj:mapped, img:img, img_valid:valid }
     }
 
-    pub fn from_mapped(transform:Transform2<f32>, mapped:MappedTexture, renderer:Rc<RefCell<Renderer>>) -> Result<Self,()> {
+    pub fn from_mapped(transform:Transform2<f32>, mapped:MappedTexture, renderer:&mut Renderer) -> Self {
 
-        let (minx,miny) = mapped.get_texcoord(0f32, 0f32);
-        let (maxx, maxy) = mapped.get_texcoord(1.0, 1.0);
+        let (minx,miny) = mapped.get_texcoord(&renderer, 0f32, 0f32);
+        let (maxx, maxy) = mapped.get_texcoord(&renderer,1.0, 1.0);
 
         let v0:Point2<f32> = transform * Point2::<f32>::new(1.0, 1.0);
         let v1:Point2<f32> = transform * Point2::<f32>::new(-1.0, 1.0);
@@ -134,8 +136,45 @@ impl Image {
             indicies:indicies
         };
 
-        let obj = renderer.borrow_mut().add(render_object);
+        let obj = MappedRenderObject::new(renderer, render_object);
 
-        Ok(Self { pos:transform, obj:obj, img:mapped  })
+        let valid = mapped.valid();
+
+        Self { pos:transform, obj:obj, img:mapped, img_valid:valid }
+    }
+
+    fn update_render_object(&mut self, renderer:&mut Renderer, transform:Transform2<f32>) {
+        let (minx,miny) = self.img.get_texcoord(&renderer, 0f32, 0f32);
+        let (maxx, maxy) = self.img.get_texcoord(&renderer,1.0, 1.0);
+
+        let v0:Point2<f32> = transform * Point2::<f32>::new(1.0, 1.0);
+        let v1:Point2<f32> = transform * Point2::<f32>::new(-1.0, 1.0);
+        let v2:Point2<f32> = transform * Point2::<f32>::new(-1.0, -1.0);
+        let v3:Point2<f32> = transform * Point2::<f32>::new(1.0, -1.0);
+
+        let verticies = vec![
+            v0.x,v0.y, maxx, maxy,
+            v1.x,v1.y, minx,maxy,
+            v2.x,v2.y, minx,miny,
+            v3.x,v3.y, maxx,miny
+        ];
+
+        let indicies:Vec<u16> = vec![0,1,2, 0,2,3];
+
+        let new_render_object = RenderObject {
+            type_id:IMAGE_RENDER_TYPE.with(|f| f.clone()),
+            uniforms:UniformBlock::new(vec![Uniform::new("texture0", crate::engine::render::renderer::UnifromType::Texture(self.img.clone()))]),
+            verticies:verticies,
+            indicies:indicies
+        };
+
+        self.obj.update(renderer, new_render_object)
+    }
+
+    pub fn render(&mut self, renderer:&mut Renderer, transform:Transform2<f32>) {
+        if !self.img_valid && self.img.valid() {
+            self.update_render_object(renderer, transform);
+        }
+        self.img_valid = self.img.valid();
     }
 }

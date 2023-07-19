@@ -1,12 +1,15 @@
-use std::{rc::{ Rc}, collections::HashMap, cell::RefCell};
+use std::{collections::HashMap, cell::{UnsafeCell, RefCell}, rc::Rc};
 
-use guillotiere::{AtlasAllocator, size2, Allocation};
+use guillotiere::{AtlasAllocator, size2, Allocation, AllocId};
 use wasm_bindgen::UnwrapThrowExt;
 use web_sys::{WebGlTexture, WebGl2RenderingContext, HtmlImageElement};
+
+use crate::log_str;
 
 //TODO- make it so that the number of instances cannot grow larger than the max provided, by merging them.
 
 #[derive(PartialEq, Eq, Clone, Copy)]
+#[allow(unused)]
 pub enum TextureFormat {
     RGB,
     RGBA,
@@ -61,20 +64,6 @@ impl TextureFormat {
             Self::RGB | Self::RGBA => WebGl2RenderingContext::UNSIGNED_BYTE
         }
     }   
-
-    fn get_size(&self) -> usize {
-        match self {
-            Self::RGB => 3,
-            Self::RGBA => 4
-        }
-    }
-
-    fn get_blank_pixel(&self) -> &[u8] {
-        match self {
-            Self::RGB => &[0u8; 3],
-            Self::RGBA => &[0u8; 4],
-        }
-    }
 }
 
 pub trait BatchableTextureSource {
@@ -83,6 +72,7 @@ pub trait BatchableTextureSource {
     fn height(&self) -> i32;
     fn format(&self) -> TextureFormat;
     fn unique_texture(&self) -> bool;
+    fn valid(&self) -> bool {true}
 }
 
 #[derive(PartialEq, Eq)]
@@ -144,13 +134,9 @@ impl BatchableTextureSource for TempBlankTextureSource {
     fn width(&self) -> i32 {
         self.width
     }
-    fn tex_sub_image_2d(&self, gl:&WebGl2RenderingContext, x:i32, y:i32) {
-        // let arr = [0u8, 1, 1, 1];
-        // let mut v = Vec::new();
-        // for i in 0..=x*y {
-        //     v.extend_from_slice(&arr);
-        // }
-        // gl.tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_opt_u8_array(WebGl2RenderingContext::TEXTURE_2D, 0, x, y, self.width, self.height, self.format.get_format(), self.format.get_type(), Some(v.as_slice()));
+    fn tex_sub_image_2d(&self, _:&WebGl2RenderingContext, _:i32, _:i32) {}
+    fn valid(&self) -> bool {
+        false
     }
 }
 
@@ -192,62 +178,112 @@ impl BatchableTextureSource for ImageTextureSource {
 }
 
 pub struct BatchedTexture {
-    batcher:Rc<RefCell<TextureBatcher>>,
+    remove_cache:Rc<RefCell<RemoveCache>>,
+    texture_id:u32,
+    allocation:Allocation,
+    valid:bool
+}
+
+pub struct FutureRemovedBatchedTexture {
     texture_id:u32,
     allocation:Allocation
 }
 
 impl PartialEq for BatchedTexture {
     fn eq(&self, other: &Self) -> bool {
-        self.texture_id == other.texture_id && self.allocation == other.allocation && Rc::ptr_eq(&self.batcher, &other.batcher)
+        self.texture_id == other.texture_id && self.allocation == other.allocation && Rc::ptr_eq(&other.remove_cache, &self.remove_cache)
     }
 }
 
 impl Drop for BatchedTexture {
     fn drop(&mut self) {
-        let batcher = &self.batcher;
-        batcher.borrow_mut().remove(&self);
+        self.remove_cache.borrow_mut().remove(FutureRemovedBatchedTexture { texture_id: self.texture_id, allocation: self.allocation });
     }
 }
 
 impl BatchedTexture {
-    pub fn new(batcher:Rc<RefCell<TextureBatcher>>, src:&dyn BatchableTextureSource) -> Self {
-        TextureBatcher::add(batcher, src)
+    pub fn new(batcher:&mut TextureBatcher, src:&dyn BatchableTextureSource) -> Self {
+        batcher.add(src)
     }
 
-    pub fn update(&mut self, src:&dyn BatchableTextureSource) {
-        Rc::clone(&self.batcher).borrow().update(self, src);
+    pub fn update(&mut self, batcher:&mut TextureBatcher, src:&dyn BatchableTextureSource) {
+        batcher.update_batched(self, src); 
     }
 
-    pub fn get_texcoord(&self, x:f32, y:f32) -> (f32,f32) {
-        self.batcher.borrow().get_texcoord(self, x, y)
-    }
-
-    pub fn get_instance_id(&self) -> u32 {
-        return self.texture_id;
+    pub fn get_texcoord(&self, batcher:&TextureBatcher, x:f32, y:f32) -> (f32,f32) {
+        return batcher.get_texcoord(self, x, y);
     }
 
     pub fn same_instance(&self, other:&Self) -> bool {
-        Rc::ptr_eq(&self.batcher, &other.batcher) && self.texture_id == other.texture_id
+        self.texture_id == other.texture_id
     }
 
-    pub fn bind(&self) {
-        self.batcher.borrow().bind(self);
+    pub fn bind(&self, batcher:&TextureBatcher) {
+        batcher.bind(self);
+    }
+
+    pub fn valid(&self) -> bool {
+        self.valid
+    }
+}
+
+pub struct UpdateCache {
+    inner:Vec<(Rc<RefCell<BatchedTexture>>,Box<dyn BatchableTextureSource>)>
+}
+
+impl UpdateCache {
+    fn new() -> Self {
+        Self { inner:Vec::new() }
+    }
+
+    pub fn cache_update(&mut self, texture:Rc<RefCell<BatchedTexture>>,src:Box<dyn BatchableTextureSource>) {
+        self.inner.push((texture,src));
+    }
+
+    fn process(&mut self, batcher:&mut TextureBatcher) {
+        for (texture,src) in self.inner.iter() {
+            batcher.update_batched(&mut texture.borrow_mut(), &**src);
+        }
+        self.inner.clear();
+    }
+}
+
+pub struct RemoveCache {
+    inner:Vec<FutureRemovedBatchedTexture>
+}
+
+impl RemoveCache {
+    fn new() -> Self {
+        Self { inner:Vec::new() }
+    }
+
+    pub fn remove(&mut self, texture:FutureRemovedBatchedTexture) {
+        self.inner.push(texture);
+    }
+
+    fn process(&mut self, batcher:&mut TextureBatcher) {
+        for texture in self.inner.iter() {
+            batcher.remove(texture.texture_id,texture.allocation);
+        }
     }
 }
 
 pub struct TextureBatcher {
     instances:HashMap<u32,TextureBatcherInstance>,
+    texture_remove_cache:Rc<RefCell<RemoveCache>>, //needs to be owned by every batched texture to allow adding to queue on drop
+    update_cache:Rc<RefCell<UpdateCache>>, //for asynchronous update operations, such as image loading
     gl:WebGl2RenderingContext,
     last_instance_id:u32,
     min_width:i32,
     min_height:i32,
 }
 
-impl TextureBatcher {
+impl TextureBatcher {    
     pub fn new(gl:WebGl2RenderingContext, w:i32, h:i32 ) -> Self {
         Self { 
             instances: HashMap::new(), 
+            texture_remove_cache:Rc::new(RefCell::new(RemoveCache::new())),
+            update_cache:Rc::new(RefCell::new(UpdateCache::new())),
             gl:gl,
             last_instance_id: 0, 
             min_width: w,
@@ -255,44 +291,51 @@ impl TextureBatcher {
         }
     }
 
-    pub fn get_texture_count(&self) -> usize {
-        self.instances.len()
+    pub fn get_update_cache(&self) -> Rc<RefCell<UpdateCache>> {
+        self.update_cache.clone()
     }
 
-    fn add(rc:Rc<RefCell<Self>>, src:&dyn BatchableTextureSource) -> BatchedTexture {
-        let gl = rc.borrow().gl.clone();
+    pub fn cleanup(&mut self) {
+        let cache = Rc::clone(&self.texture_remove_cache);
+        cache.borrow_mut().process(self);
+    }
+
+    pub fn update(&mut self) {
+        let cache = Rc::clone(&self.update_cache);
+        cache.borrow_mut().process(self);
+    }
+
+    fn add(&mut self, src:&dyn BatchableTextureSource) -> BatchedTexture {
+        let gl = self.gl.clone();
         let unique = src.unique_texture();
 
         //try to add into existing instance
         if !unique {
-            for (instance_id,instance) in rc.borrow_mut().instances.iter_mut() {
-                if let Some(batched_texture) = instance.add(&gl, &rc, src, *instance_id) {
+            for (instance_id,instance) in self.instances.iter_mut() {
+                if let Some(batched_texture) = instance.add(self.texture_remove_cache.clone(), &gl, src, *instance_id) {
                     return batched_texture;
                 }
             }
         }
 
         //create new instance
-        rc.borrow_mut().last_instance_id += 1;
+        self.last_instance_id += 1;
 
         let mut new_instance = TextureBatcherInstance::new(
-            &rc,
-            rc.borrow().last_instance_id,
             &gl, 
             src.format(), 
-            if unique { src.width() } else { i32::max(rc.borrow().min_width, src.width()) },
-            if unique { src.height() } else { i32::max(rc.borrow().min_height, src.height()) }
+            if unique { src.width() } else { i32::max(self.min_width, src.width()) },
+            if unique { src.height() } else { i32::max(self.min_height, src.height()) }
         );
 
-        let result = new_instance.add(&gl, &rc, src, rc.borrow().last_instance_id).expect("Expected new texture batcher instance to succesfully allocate");
-        
-        let k = rc.borrow().last_instance_id;
-        rc.borrow_mut().instances.insert(k, new_instance);
+        let result = new_instance.add(self.texture_remove_cache.clone(), &gl, src, self.last_instance_id).expect("Expected new texture batcher instance to succesfully allocate");
+
+        self.instances.insert(self.last_instance_id, new_instance);
         
         result
     }
 
-    pub fn bind(&self, batched_texture:&BatchedTexture) {
+    fn bind(&self, batched_texture:&BatchedTexture) {
         self.instances.get(&batched_texture.texture_id).expect_throw("Expected texture ID to be valid while binding").bind(&self.gl.clone(),WebGl2RenderingContext::TEXTURE_2D)
     }
 
@@ -301,37 +344,28 @@ impl TextureBatcher {
         .adjust_texture_coord(&batched_texture.allocation, x, y)
     }
 
-    fn update(&self, batched_texture:&mut BatchedTexture, src:&dyn BatchableTextureSource) {
+    fn update_batched(&mut self, batched_texture:&mut BatchedTexture, src:&dyn BatchableTextureSource) {
         let id = batched_texture.texture_id;
         let gl = self.gl.clone();
         let instance = self.instances.get(&id).expect_throw("Expected texture ID to be valid while updating");
         
         if src.width() != batched_texture.allocation.rectangle.width() ||
-           src.height() != batched_texture.allocation.rectangle.height() ||
-           src.format() != instance.format {
-            *batched_texture = Self::add(batched_texture.batcher.clone(), src);
+            src.height() != batched_texture.allocation.rectangle.height() ||
+            src.format() != instance.format {
+            *batched_texture = self.add(src);
             return;
         }
         
         instance.update_batched(&gl, &batched_texture.allocation, src);
+        batched_texture.valid = src.valid();
     }
 
-    fn remove(&mut self, batched_texture:&BatchedTexture) {
-        self.instances.get_mut(&batched_texture.texture_id).expect_throw("Expected texture ID to be valid while removing").remove(batched_texture.allocation);
-    }
-}
-
-impl Drop for TextureBatcher {
-    fn drop(&mut self) {
-        for instance in self.instances.values() {
-            instance.delete_texture(self.gl.clone())
-        }
+    fn remove(&mut self, id:u32, allocation:Allocation) {
+        self.instances.get_mut(&id).expect_throw("Expected texture ID to be valid while removing").remove(allocation);
     }
 }
 
-pub struct TextureBatcherInstance {
-    batcher:Rc<RefCell<TextureBatcher>>,
-    instance_id:u32,
+struct TextureBatcherInstance {
     atlas:AtlasAllocator,
     texture:WebGlTexture,
     width:i32,
@@ -340,7 +374,7 @@ pub struct TextureBatcherInstance {
 }
 
 impl TextureBatcherInstance { 
-    fn new(rc:&Rc<RefCell<TextureBatcher>>, instance_id:u32, gl:&WebGl2RenderingContext,format:TextureFormat,width:i32,height:i32) -> Self {
+    fn new(gl:&WebGl2RenderingContext,format:TextureFormat,width:i32,height:i32) -> Self {
         let texture = gl.create_texture().expect_throw("Render Error: Unable to create instance of texture batcher");
         gl.bind_texture(WebGl2RenderingContext::TEXTURE_2D, Some(&texture));
         gl.tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_u8_array(
@@ -354,11 +388,11 @@ impl TextureBatcherInstance {
             format.get_type(), 
             None
         ).expect_throw("Error uploading initial data to TextureBatcher GlTexture");
-        gl.bind_texture(WebGl2RenderingContext::TEXTURE_2D, None);
+        gl.tex_parameteri(WebGl2RenderingContext::TEXTURE_2D, WebGl2RenderingContext::TEXTURE_MIN_FILTER, WebGl2RenderingContext::LINEAR as i32);
+        gl.tex_parameteri(WebGl2RenderingContext::TEXTURE_2D, WebGl2RenderingContext::TEXTURE_WRAP_S, WebGl2RenderingContext::CLAMP_TO_EDGE as i32);
+        gl.tex_parameteri(WebGl2RenderingContext::TEXTURE_2D, WebGl2RenderingContext::TEXTURE_WRAP_T, WebGl2RenderingContext::CLAMP_TO_EDGE as i32);
 
         Self { 
-            batcher: rc.clone(),
-            instance_id: instance_id,
             atlas: AtlasAllocator::new(size2(width, height)),
             texture: texture, 
             width: width,
@@ -367,7 +401,7 @@ impl TextureBatcherInstance {
         }
     }
 
-    fn add(&mut self, gl:&WebGl2RenderingContext, rc:&Rc<RefCell<TextureBatcher>>, src:&dyn BatchableTextureSource, instance_id:u32) -> Option<BatchedTexture> {
+    fn add(&mut self, remove_cache:Rc<RefCell<RemoveCache>>, gl:&WebGl2RenderingContext, src:&dyn BatchableTextureSource, instance_id:u32) -> Option<BatchedTexture> {
         let (height,width,format) = (src.height(),src.width(),src.format());
         if !(format == self.format && width <= self.width && height <= self.height) {return None;}
 
@@ -375,13 +409,15 @@ impl TextureBatcherInstance {
             gl.bind_texture(WebGl2RenderingContext::TEXTURE_2D, Some(&self.texture));
             let p = allocation.rectangle.min;
             src.tex_sub_image_2d(gl, p.x, p.y);
-            gl.bind_texture(WebGl2RenderingContext::TEXTURE_2D, None);
 
-            return Some(BatchedTexture { 
-                batcher: rc.clone(), 
+            let mut result = BatchedTexture { 
+                remove_cache: remove_cache,
                 texture_id: instance_id,
-                allocation: allocation 
-            });
+                allocation: allocation,
+                valid:src.valid()
+            };
+
+            return Some(result);
         } else {
             return None;
         }
@@ -391,7 +427,6 @@ impl TextureBatcherInstance {
         let p = allocation.rectangle.min;
         gl.bind_texture(WebGl2RenderingContext::TEXTURE_2D, Some(&self.texture));
         src.tex_sub_image_2d(gl, p.x, p.y);
-        gl.bind_texture(WebGl2RenderingContext::TEXTURE_2D, None);
     }
 
     fn bind(&self, gl:&WebGl2RenderingContext, target:u32) {
@@ -400,20 +435,21 @@ impl TextureBatcherInstance {
 
     fn adjust_texture_coord(&self, allocation:&Allocation, x:f32, y:f32) -> (f32,f32)  {
         let min = allocation.rectangle.min;
+        log_str(&("min rect".to_owned() + &min.x.to_string() + " " + &min.y.to_string()));
+        log_str(&("man rect".to_owned() + &allocation.rectangle.max.x.to_string() + " " + &allocation.rectangle.max.y.to_string()));
+        log_str(&("w h".to_owned() + &self.width.to_string() + " " + &self.height.to_string()));
+
         (
-            (min.x as f32 + x*allocation.rectangle.width() as f32)/self.width as f32, 
-            (min.x as f32 + y*allocation.rectangle.height() as f32)/self.height as f32
+            (min.x as f32 + x*allocation.rectangle.width() as f32) / self.width as f32, 
+            (min.y as f32 + y*allocation.rectangle.height() as f32) / self.height as f32
         )
     }
 
     fn remove(&mut self, allocation:Allocation) {
         self.atlas.deallocate(allocation.id);
-        if self.atlas.is_empty() {
-            self.batcher.clone().borrow_mut().instances.remove(&self.instance_id);
-        }
     }
 
-    fn delete_texture(&self, gl:WebGl2RenderingContext) {
-        gl.delete_texture(Some(&self.texture));
+    fn empty(&self) -> bool {
+        self.atlas.is_empty()
     }
 }
