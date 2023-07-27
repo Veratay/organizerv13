@@ -1,7 +1,5 @@
 use std::{slice::{Iter,IterMut}, ops::{Index, IndexMut}, collections::HashMap, fmt::Debug};
 
-use crate::{log_str, log_i32};
-
 pub struct IndexMap<T> {
     vec:Vec<(usize,T)>,
     last_idx:usize
@@ -30,8 +28,6 @@ impl<T> IndexMap<T> {
     pub fn push(&mut self, entry:T) -> usize {
         self.last_idx += 1;
         self.vec.push((self.last_idx,entry));
-        log_str("pusged");
-        log_i32(self.last_idx as i32);
         self.last_idx
     }
 
@@ -60,8 +56,6 @@ impl<T> Index<usize> for IndexMap<T> {
     type Output = T;
     fn index(&self, index: usize) -> &Self::Output {
         let i = self.vec.binary_search_by_key(&index, |(s,t)| *s).unwrap();
-        log_str("aouifss");
-        log_str(&i.to_string());
         &self.vec[i].1
     }
 }

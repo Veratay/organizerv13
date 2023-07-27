@@ -1,4 +1,4 @@
-use std::{ rc::Rc, cell::RefCell};
+use std::rc::Rc;
 
 use nalgebra::{Transform2, Point2};
 
@@ -40,14 +40,12 @@ thread_local! {
             VertexAttrib { 
                 name: String::from("position"),
                 role:AttributeRole::Custom,
-                data_type:ShaderDataTypes::FLOAT, 
-                count:2
+                data_type:ShaderDataTypes::FLOAT_VEC2, 
             }, 
             VertexAttrib { 
                 name: String::from("texCoord"), 
                 role:AttributeRole::Custom,
-                data_type:ShaderDataTypes::FLOAT, 
-                count:2
+                data_type:ShaderDataTypes::FLOAT_VEC2, 
             }
         ],
         uniform_attribs:vec![
@@ -59,7 +57,7 @@ thread_local! {
         instance_attribs:Vec::new(),
         blank_vertex:vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         vertex_size:4,
-        verticies_chunk_min_size:8,
+        verticies_chunk_min_size:20,
         verticies_chunk_grow_factor:1.1,
         verticies_chunk_max_size:2000,
         indicies_chunk_min_size:1000,
@@ -69,14 +67,13 @@ thread_local! {
 }
 
 pub struct Image {
-    pos:Transform2<f32>,
     obj:MappedRenderObject,
     img:MappedTexture,
     img_valid:bool
 }
 
 impl Image {
-    pub fn from_url(transform:Transform2<f32>, url:String, renderer:&mut Renderer) -> Self {
+    pub fn from_url(renderer:&mut Renderer, transform:Transform2<f32>, url:String) -> Self {
         let img = renderer.upload_image_from_url(url);
 
         let (minx,miny) = img.get_texcoord(&renderer,0f32, 0f32);
@@ -107,10 +104,10 @@ impl Image {
 
         let valid = img.valid();
 
-        Self { pos:transform, obj:mapped, img:img, img_valid:valid }
+        Self { obj:mapped, img:img, img_valid:valid }
     }
 
-    pub fn from_mapped(transform:Transform2<f32>, mapped:MappedTexture, renderer:&mut Renderer) -> Self {
+    pub fn from_mapped(renderer:&mut Renderer, transform:Transform2<f32>, mapped:MappedTexture) -> Self {
 
         let (minx,miny) = mapped.get_texcoord(&renderer, 0f32, 0f32);
         let (maxx, maxy) = mapped.get_texcoord(&renderer,1.0, 1.0);
@@ -140,7 +137,7 @@ impl Image {
 
         let valid = mapped.valid();
 
-        Self { pos:transform, obj:obj, img:mapped, img_valid:valid }
+        Self { obj:obj, img:mapped, img_valid:valid }
     }
 
     fn update_render_object(&mut self, renderer:&mut Renderer, transform:Transform2<f32>) {
@@ -175,6 +172,7 @@ impl Image {
         if !self.img_valid && self.img.valid() {
             self.update_render_object(renderer, transform);
         }
+        self.update_render_object(renderer, transform);
         self.img_valid = self.img.valid();
     }
 }

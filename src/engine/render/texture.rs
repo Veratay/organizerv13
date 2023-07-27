@@ -435,9 +435,6 @@ impl TextureBatcherInstance {
 
     fn adjust_texture_coord(&self, allocation:&Allocation, x:f32, y:f32) -> (f32,f32)  {
         let min = allocation.rectangle.min;
-        log_str(&("min rect".to_owned() + &min.x.to_string() + " " + &min.y.to_string()));
-        log_str(&("man rect".to_owned() + &allocation.rectangle.max.x.to_string() + " " + &allocation.rectangle.max.y.to_string()));
-        log_str(&("w h".to_owned() + &self.width.to_string() + " " + &self.height.to_string()));
 
         (
             (min.x as f32 + x*allocation.rectangle.width() as f32) / self.width as f32, 

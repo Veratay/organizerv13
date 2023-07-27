@@ -9,5 +9,5 @@ export function loadImageAndAwaitLoad(url, callback) {
 }
 
 organizer.then(code=>{
-    code.texture_test();
+    code.line_test();
 }).catch(console.error);

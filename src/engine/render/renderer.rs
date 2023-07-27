@@ -33,6 +33,8 @@ impl Renderer {
 
         //config
         gl.pixel_storei(WebGl2RenderingContext::UNPACK_FLIP_Y_WEBGL, 1);
+        gl.enable(WebGl2RenderingContext::BLEND);
+        gl.blend_func(WebGl2RenderingContext::SRC_ALPHA, WebGl2RenderingContext::ONE_MINUS_SRC_ALPHA);
 
         Self { 
             gl: gl.clone(),
@@ -57,6 +59,13 @@ impl Renderer {
 
     fn update(&mut self, mapped:&mut MappedRenderObject, object:RenderObject) {
         self.render_batchers.get_mut(&object.type_id.name.clone().to_owned()).expect_throw("Expected batcher to exist while updating render object").update(&self.gl, mapped, object)
+    }
+
+    fn resize_canvas(&self) {
+        let display_width = self.canvas.client_width();
+        let display_height = self.canvas.client_height();
+        self.canvas.set_width(display_width as u32);
+        self.canvas.set_height(display_height as u32);
     }
 
     pub fn upload_image_from_url(&mut self, url:String) -> MappedTexture {
@@ -112,13 +121,6 @@ impl Renderer {
         for data in self.render_batchers.values() {
             data.render(self);
         }
-    }
-
-    fn resize_canvas(&self) {
-        let display_width = self.canvas.client_width();
-        let display_height = self.canvas.client_height();
-        self.canvas.set_width(display_width as u32);
-        self.canvas.set_height(display_height as u32);
     }
 }
 
@@ -179,18 +181,12 @@ impl RenderBatcher {
     }
 
     fn remove(&mut self, object:&MappedRenderObject) {
-        log_str("aaaaa");
-        log_i32(object.id as i32);
-        // let chunk_index = &self.mapped[object.id];
-        //self.chunks[chunk_index.chunk].remove(&self.gl, chunk_index, &object.render_type)
         self.mapped.remove(object.id);
-        if true { log_str(&format!("{:?}",self.mapped)); }
     }
 
     fn render(&self, renderer:&Renderer) {
         let gl = &self.gl;
         gl.use_program(Some(&self.program));
-        log_str(&format!("{:?}",self.mapped));
         for chunk in self.chunks.values() {
             chunk.render(renderer,&self.program);
         }
@@ -265,14 +261,6 @@ impl RenderChunk {
                 self.indicies_free_areas.iter_mut().find(|s| s.size >= indicies_len)
             )
         {
-            log_str("indicies start");
-            log_str(&i_slice.start.to_string());
-
-            log_str("verticies start");
-            log_str(&v_slice.start.to_string());
-
-            log_str("verticies count");
-            log_str(&self.verticies_count.to_string());
 
             let result = RenderChunkIndex { 
                 chunk:0,
@@ -298,10 +286,6 @@ impl RenderChunk {
             let log_i_len = (i_slice.start+i_slice.size) as u32;
 
             self.upload_at_slice(gl, object, &result);
-
-            //TODO: COMPLETELY FLAWED WHEN THINGS START TO GET DELETED
-            log_str("data after updating");
-            self.gl_buffers.log_data(gl,log_v_len, log_i_len );
 
             return Some(result);
         }
@@ -536,6 +520,12 @@ impl Uniform {
 pub struct UniformBlock {
     uniforms:Vec<Uniform>,
     cached_uniform_locations:RefCell<Vec<WebGlUniformLocation>>
+}
+
+impl Default for UniformBlock {
+    fn default() -> Self {
+        Self { uniforms: Vec::new(), cached_uniform_locations: RefCell::new(Vec::new()) }
+    }
 }
 
 impl UniformBlock {

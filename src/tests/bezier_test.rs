@@ -1,6 +1,6 @@
-use crate::{log_str, engine::render::{types::image::Image, renderer::Renderer, texture::RawTextureSource}};
+use crate::{log_str, engine::render::{types::{quadratic_bezier::QuadraticBezier, image::Image, triangle::Triangle}, renderer::Renderer}};
 
-use nalgebra::{Transform2, Matrix3};
+use nalgebra::{Transform2, Matrix3, Point2, Vector2};
 
 extern crate wasm_bindgen;
 use std::{ rc::Rc, cell::RefCell};
@@ -13,36 +13,21 @@ use wasm_bindgen::{JsCast};
 extern crate console_error_panic_hook;
 use std::panic;
 
+use super::make_renderer;
+
 #[wasm_bindgen]
-pub fn texture_test() {
+pub fn bezier_test() {
     log_str("starting texture test");
     panic::set_hook(Box::new(console_error_panic_hook::hook));
-    let document = web_sys::window().unwrap().document().unwrap();
-    let canvas = document.get_element_by_id("rootCanvas").unwrap();
-    let canvas: web_sys::HtmlCanvasElement = canvas.dyn_into::<web_sys::HtmlCanvasElement>().unwrap();
-    let mut renderer = Renderer::new(canvas);
+    let mut renderer = make_renderer();
 
-    let mapped = renderer.upload_texture(&RawTextureSource {
-        data:&[0u8, 255u8, 0u8, 255u8],
-        format:crate::engine::render::texture::TextureFormat::RGBA,
-        width:1,
-        height:1,
-        unique:false
-    });
+    let mut triangle = Triangle::new(&mut renderer, [
+        Vector2::new(0.0, 0.0),Vector2::new(0.5, 0.0),Vector2::new(0.5, 0.5)
+    ], [0.0,0.0,1.0,1.0]);
 
-    let mut img1 = Image::from_url( &mut renderer, Transform2::from_matrix_unchecked(Matrix3::new(
-        0.5,0.0,0.5,
-        0.0,0.5,0.0,
-        0.0,0.0,1.0
-    )), String::from("./snout_stuff.png"));
-    renderer.render();
-
-    let mut img2 = Image::from_url(&mut renderer, Transform2::from_matrix_unchecked(Matrix3::new(
-                0.5,0.0,-0.5,
-                0.0,0.5,0.0,
-                0.0,0.0,1.0
-            )), String::from("./sniff.jpeg"));
-    renderer.render();
+    let mut curve = QuadraticBezier::new(&mut renderer,[
+        Vector2::new(0.0, 0.0),Vector2::new(0.5, 0.),Vector2::new(0.5, 0.5)
+    ],[1.0,0.0,0.0,1.0],0.01,0.01);
 
     // Here we want to call `requestAnimationFrame` in a loop, but only a fixed
     // number of times. After it's done we want all our resources cleaned up. To
@@ -66,17 +51,7 @@ pub fn texture_test() {
         // Set the body's text content to how many times this
         // requestAnimationFrame callback has fired.
         i += 0.001;
-        
-        img1.render(&mut renderer, Transform2::from_matrix_unchecked(Matrix3::new(
-            0.5,0.0,0.5-i,
-            0.0,0.5,0.0,
-            0.0,0.0,1.0
-        )));
-        img2.render(&mut renderer, Transform2::from_matrix_unchecked(Matrix3::new(
-            0.5,0.0,-0.5,
-            0.0,0.5,0.0,
-            0.0,0.0,1.0
-        )));
+        curve.render();
         renderer.render();
 
         // Schedule ourself for another requestAnimationFrame callback.

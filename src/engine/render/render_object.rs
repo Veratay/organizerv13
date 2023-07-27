@@ -16,12 +16,17 @@ pub struct RenderObject {
     pub indicies:Vec<u16>
 }
 
+pub struct InstancedData {
+    pub verticies:Vec<f32>,
+    pub indicies:Vec<u16>
+}
+
 //TODO: make shader registry
 pub struct RenderType {
     pub name:String,
     pub vertex_shader:String,
     pub fragment_shader:String,
-    pub instanced:Option<RenderObject>,
+    pub instanced:Option<InstancedData>,
     pub blank_vertex:Vec<f32>,
     pub vertex_attribs:Vec<VertexAttrib>,
     pub instance_attribs:Vec<VertexAttrib>,
@@ -53,7 +58,6 @@ impl RenderType {
         let vbo = gl.create_buffer().expect_throw("Error Creating VBO");
         gl.bind_buffer(WebGl2RenderingContext::ARRAY_BUFFER, Some(&vbo));
         unsafe {
-            log_f32_arr(js_sys::Float32Array::view(verticies));
             let buffer_view = match &self.instanced {
                 None => js_sys::Float32Array::view(&verticies),
                 Some(instanced_data) => js_sys::Float32Array::view(&instanced_data.verticies)
@@ -62,12 +66,14 @@ impl RenderType {
         }
 
         let mut offset = 0;
-        let stride = self.vertex_attribs.iter().fold(0, |acc, a:&VertexAttrib| acc + a.data_type.get_size() * a.count );
+        let stride = self.vertex_attribs.iter().fold(0, |acc, a:&VertexAttrib| acc + a.data_type.get_size() );
         for a in self.vertex_attribs.iter() {
-            let location = gl.get_attrib_location(program, &a.name) as u32;
+            let location = gl.get_attrib_location(program, &a.name);
+            if location == -1 { log_str(&format!("Could not find attribute location of {} attribute",a.name))}
+            let location = location as u32;
             gl.enable_vertex_attrib_array(location);
-            gl.vertex_attrib_pointer_with_i32(location, a.count, a.data_type.get_webgl_representation(), false, stride, offset);
-            offset += a.data_type.get_size() * a.count;
+            gl.vertex_attrib_pointer_with_i32(location, a.data_type.get_count(), a.data_type.get_webgl_representation(), false, stride, offset);
+            offset += a.data_type.get_size();
         }
 
         let ibo = gl.create_buffer().expect_throw("Error Creating IBO");
@@ -91,15 +97,15 @@ impl RenderType {
                     gl.buffer_data_with_array_buffer_view(WebGl2RenderingContext::ARRAY_BUFFER, &buffer_view, WebGl2RenderingContext::DYNAMIC_DRAW);
                 }
 
-                let stride = self.instance_attribs.iter().fold(0, |acc, a:&VertexAttrib| acc + a.data_type.get_size() * a.count );
+                let stride = self.instance_attribs.iter().fold(0, |acc, a:&VertexAttrib| acc + a.data_type.get_size() );
                 let mut offset = 0;
                 for a in self.instance_attribs.iter() {
                     let location = gl.get_attrib_location(program, &a.name) as u32;
                     gl.enable_vertex_attrib_array(location);
-                    gl.vertex_attrib_pointer_with_i32(location, a.count, a.data_type.get_webgl_representation(), false, stride, offset);
+                    gl.vertex_attrib_pointer_with_i32(location, a.data_type.get_count(), a.data_type.get_webgl_representation(), false, stride, offset);
                     gl.vertex_attrib_divisor(location, 1);
 
-                    offset += a.data_type.get_size() * a.count;
+                    offset += a.data_type.get_size();
                 }
                 Some(instanced_buffer_object)
             }
@@ -149,7 +155,6 @@ impl GlBuffers {
         };
 
         unsafe {
-            log_f32_arr(js_sys::Float32Array::view(verticies));
             let buffer_view = js_sys::Float32Array::view(verticies);
             gl.buffer_sub_data_with_i32_and_array_buffer_view(WebGl2RenderingContext::ARRAY_BUFFER, v_start as i32, &buffer_view)
         }
@@ -157,7 +162,6 @@ impl GlBuffers {
         if self.instance.is_none() {
             gl.bind_buffer(WebGl2RenderingContext::ELEMENT_ARRAY_BUFFER, Some(&self.ibo));
             unsafe {
-                log_u16_arr(js_sys::Uint16Array::view(indicies));
                 let buffer_view = js_sys::Uint16Array::view(indicies);
                 gl.buffer_sub_data_with_i32_and_array_buffer_view(WebGl2RenderingContext::ELEMENT_ARRAY_BUFFER, i_start as i32, &buffer_view);
             }
@@ -226,7 +230,6 @@ pub struct VertexAttrib {
     pub name:String,
     pub role:AttributeRole,
     pub data_type:ShaderDataTypes,
-    pub count:i32
 }
 
 pub struct UniformAttrib {
@@ -238,10 +241,10 @@ pub struct UniformAttrib {
 #[derive(Clone)]
 pub enum ShaderDataTypes {
     FLOAT,
-    // FLOAT_VEC2,
+    FLOAT_VEC2,
     // FLOAT_VEC3,
-    // FLOAT_VEC4,
-    // INT,
+    FLOAT_VEC4,
+    INT,
     // INT_VEC2,
     // INT_VEC3,
     // INT_VEC4,
@@ -270,13 +273,27 @@ pub enum ShaderDataTypes {
 impl ShaderDataTypes {
     pub fn get_webgl_representation(&self) -> u32 {
         match self {
-            ShaderDataTypes::FLOAT => WebGl2RenderingContext::FLOAT
+            Self::FLOAT => WebGl2RenderingContext::FLOAT,
+            Self::INT => WebGl2RenderingContext::INT,
+            Self::FLOAT_VEC2 => WebGl2RenderingContext::FLOAT,
+            Self::FLOAT_VEC4 => WebGl2RenderingContext::FLOAT
         }
     }
 
     pub fn get_size(&self) -> i32 {
         match self {
-            ShaderDataTypes::FLOAT => 4
+            Self::FLOAT => 4,
+            Self::INT => 4,
+            Self::FLOAT_VEC2 => 8,
+            Self::FLOAT_VEC4 => 16
+        }
+    }
+
+    pub fn get_count(&self) -> i32 {
+        match self {
+            Self::FLOAT | Self::INT => 1,
+            Self::FLOAT_VEC2 => 2,
+            Self::FLOAT_VEC4 => 4
         }
     }
 }
