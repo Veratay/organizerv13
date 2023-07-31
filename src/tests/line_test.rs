@@ -1,4 +1,4 @@
-use crate::{log_str, engine::render::{types::{quadratic_bezier::QuadraticBezier, image::Image, triangle::Triangle, line::Line}, renderer::Renderer}};
+use crate::{log_str, engine::render::{types::{quadratic_bezier::QuadraticBezier, image::Image, triangle::Triangle, line::{Line,EndBehavior}}, renderer::Renderer}};
 
 use nalgebra::{Transform2, Matrix3, Point2, Vector2};
 
@@ -22,8 +22,8 @@ pub fn line_test() {
     let mut renderer = make_renderer();
 
     let mut line =  Line::new(&mut renderer,[
-        Vector2::new(0.0, 0.0),Vector2::new(0.5, 0.5)
-    ],[1.0,0.0,0.0,1.0],0.01,0.01);
+        Vector2::new(0.0, 0.0),Vector2::new(0.5, 0.0)
+    ],[1.0,0.0,0.0,1.0],0.01,0.01, EndBehavior::Clipped);
 
     // Here we want to call `requestAnimationFrame` in a loop, but only a fixed
     // number of times. After it's done we want all our resources cleaned up. To

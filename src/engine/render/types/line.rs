@@ -131,24 +131,27 @@ pub enum EndBehavior {
 
 impl Line {
     pub fn new(renderer:&mut Renderer, points:[Vector2<f32>; 2], color:[f32; 4], thickness:f32, smooth:f32, end_behavior:EndBehavior) -> Self {
-        let offset = thickness + smooth;
         
-        let theta = (points[1].y-points[0].y).atan2(points[1].x-points[0].x) + FRAC_PI_2;
-        let m:Vector2<f32> = (points[1]+points[0])/2.0;
+        let theta = (points[1].y-points[0].y).atan2(points[1].x-points[0].x);
 
         let t0 = match end_behavior {
                 EndBehavior::Rounded => theta+FRAC_PI_2+FRAC_PI_4,
                 EndBehavior::Clipped => theta+FRAC_PI_2
             };
         let t1 = match end_behavior {
-            EndBehavior::Rounded => theta-FRAC_PI_2-FRAC_PI_4,
-            EndBehavior::Clipped => theta-FRAC_PI_2
+            EndBehavior::Rounded => theta+FRAC_PI_4,
+            EndBehavior::Clipped => theta+FRAC_PI_2
         };
-        let c: f32 = offset*SQRT_2*2;
-        let (x0,y0) = (points[0].x+f32::cos(t0)*offset*SQRT_2,points[0].y+f32::sin(t0)*offset*SQRT_2);
-        let (x1,y1) = (points[1].x+f32::cos(t1)*offset*SQRT_2,points[1].y+f32::sin(t1)*offset*SQRT_2);
-        let (x2,y2) = (x0+f32::cos(theta+FRAC_PI_2)*c,y0+f32::sin(theta+FRAC_PI_2)*c);
-        let (x3,y3) = (x1+f32::cos(theta+FRAC_PI_2)*c,y1+f32::sin(theta+FRAC_PI_2)*c);
+        let offset = thickness + smooth;
+    
+        let c = match end_behavior {
+            EndBehavior::Clipped => offset,
+            EndBehavior::Rounded => offset*SQRT_2
+        }; 
+        let (x0,y0) = (points[0].x+f32::cos(t0)*c,points[0].y+f32::sin(t0)*c);
+        let (x1,y1) = (points[1].x+f32::cos(t1)*c,points[1].y+f32::sin(t1)*c);
+        let (x2,y2) = (points[0].x+f32::cos(-t0)*c,points[0].y+f32::sin(-t0)*c);
+        let (x3,y3) = (points[1].x+f32::cos(-t1)*c,points[1].y+f32::sin(-t1)*c);
 
         let verticies = vec![
             x0,y0, color[0],color[1],color[2],color[3], thickness, points[0].x,points[0].y,points[1].x,points[1].y, smooth,

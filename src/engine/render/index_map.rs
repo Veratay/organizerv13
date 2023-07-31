@@ -1,4 +1,4 @@
-use std::{slice::{Iter,IterMut}, ops::{Index, IndexMut}, collections::HashMap, fmt::Debug};
+use std::{slice::{Iter,IterMut}, ops::{Index, IndexMut}, fmt::Debug};
 
 pub struct IndexMap<T> {
     vec:Vec<(usize,T)>,
