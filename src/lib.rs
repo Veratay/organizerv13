@@ -28,33 +28,3 @@ extern "C" {
     #[wasm_bindgen(js_namespace = console, js_name = log)]
     fn log_i32(s: i32);
 }
-
-// #[wasm_bindgen]
-// pub fn rust_hello_old() {
-//     log_str("Hey :)");
-//     let document = web_sys::window().unwrap().document().unwrap();
-//     let canvas = document.get_element_by_id("rootCanvas").unwrap();
-//     let canvas: web_sys::HtmlCanvasElement = canvas.dyn_into::<web_sys::HtmlCanvasElement>().unwrap();
-//     let renderer = Rc::new(RefCell::new(Renderer::new(canvas)));
-//     Rect::new(Transform2::from_matrix_unchecked(Matrix3::new(
-//         0.5,0.0,0.5,
-//         0.0,0.5,0.0,
-//         0.0,0.0,1.0
-//     )), [0.0,0.0,1.0,1.0], renderer.clone());
-//     Rect::new(Transform2::from_matrix_unchecked(Matrix3::new(
-//         0.5,0.0,-0.5,
-//         0.0,0.5,0.0,
-//         0.0,0.0,1.0
-//     )), [0.0,0.5,0.5,1.0], renderer.clone());
-//     Rect::new(Transform2::from_matrix_unchecked(Matrix3::new(
-//         0.5,0.0,-0.5,
-//         0.0,0.5,0.5,
-//         0.0,0.0,1.0
-//     )), [1.0,0.0,0.0,1.0], renderer.clone());
-//     Rect::new(Transform2::from_matrix_unchecked(Matrix3::new(
-//         0.25,0.0,0.0,
-//         0.0,0.25,0.0,
-//         0.0,0.0,1.0
-//     )), [1.0,1.0,1.0,1.0], renderer.clone());
-//     renderer.borrow().render();
-// }

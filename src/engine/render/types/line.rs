@@ -1,8 +1,8 @@
-use std::{rc::Rc,f32::consts::{FRAC_PI_4,FRAC_PI_2, TAU, SQRT_2,PI}};
+use std::{rc::Rc,f32::consts::{FRAC_PI_4,FRAC_PI_2, SQRT_2}};
 
-use nalgebra::{Point2, Vector2};
+use nalgebra::Vector2;
 
-use crate::{engine::render::{render_object::{RenderType, VertexAttrib, ShaderDataTypes, RenderObject, UniformAttrib, UniformRole, AttributeRole, InstancedData}, renderer::{Renderer, MappedRenderObject, UniformBlock, Uniform, MappedTexture}}, log_str, log_i32};
+use crate::engine::render::{render_object::{RenderType, VertexAttrib, ShaderDataTypes, RenderObject, AttributeRole}, renderer::{Renderer, MappedRenderObject, UniformBlock}};
 
 thread_local! {
     static LINE_RENDER_TYPE: Rc<RenderType> = Rc::new(RenderType {
@@ -79,12 +79,12 @@ thread_local! {
             VertexAttrib { 
                 name: String::from("pos"), 
                 role:AttributeRole::Custom,
-                data_type:ShaderDataTypes::FLOAT_VEC2, 
+                data_type:ShaderDataTypes::FloatVec2, 
             },
             VertexAttrib {
                 name: String::from("vColor"),
                 role:AttributeRole::Custom,
-                data_type:ShaderDataTypes::FLOAT_VEC4,
+                data_type:ShaderDataTypes::FloatVec4,
             },
             VertexAttrib {
                 name:String::from("vThickness"),
@@ -94,12 +94,12 @@ thread_local! {
             VertexAttrib { 
                 name: String::from("points1"),
                 role:AttributeRole::Custom,
-                data_type:ShaderDataTypes::FLOAT_VEC2, 
+                data_type:ShaderDataTypes::FloatVec2, 
             }, 
             VertexAttrib { 
                 name: String::from("points2"),
                 role:AttributeRole::Custom,
-                data_type:ShaderDataTypes::FLOAT_VEC2, 
+                data_type:ShaderDataTypes::FloatVec2, 
             }, 
             VertexAttrib { 
                 name: String::from("vSmooth"), 

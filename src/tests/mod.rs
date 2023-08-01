@@ -5,6 +5,7 @@ use crate::engine::render::renderer::Renderer;
 mod texture_test;
 mod bezier_test;
 mod line_test;
+mod texture_update_test;
 
 fn make_renderer() -> Renderer {
     let document = web_sys::window().unwrap().document().unwrap();

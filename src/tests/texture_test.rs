@@ -7,9 +7,6 @@ use std::{ rc::Rc, cell::RefCell};
 
 use wasm_bindgen::prelude::*;
 
-use js_sys::{Float32Array, Uint16Array, ArrayBuffer};
-use wasm_bindgen::{JsCast};
-
 extern crate console_error_panic_hook;
 use std::panic;
 
@@ -22,7 +19,7 @@ pub fn texture_test() {
     let canvas: web_sys::HtmlCanvasElement = canvas.dyn_into::<web_sys::HtmlCanvasElement>().unwrap();
     let mut renderer = Renderer::new(canvas);
 
-    let mapped = renderer.upload_texture(&RawTextureSource {
+    let _ = renderer.upload_texture(&RawTextureSource {
         data:&[0u8, 255u8, 0u8, 255u8],
         format:crate::engine::render::texture::TextureFormat::RGBA,
         width:1,

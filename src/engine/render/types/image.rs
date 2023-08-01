@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use nalgebra::{Transform2, Point2};
 
-use crate::engine::render::{render_object::{RenderType, VertexAttrib, ShaderDataTypes, RenderObject, UniformAttrib, UniformRole, AttributeRole}, renderer::{Renderer, MappedRenderObject, UniformBlock, Uniform, MappedTexture}};
+use crate::engine::render::{render_object::{RenderType, VertexAttrib, ShaderDataTypes, RenderObject, UniformAttrib, UniformRole, AttributeRole}, renderer::{Renderer, MappedRenderObject, UniformBlock, Uniform, MappedTexture}, texture::BatchableTextureSource};
 
 thread_local! {
     static IMAGE_RENDER_TYPE: Rc<RenderType> = Rc::new(RenderType {
@@ -40,12 +40,12 @@ thread_local! {
             VertexAttrib { 
                 name: String::from("position"),
                 role:AttributeRole::Custom,
-                data_type:ShaderDataTypes::FLOAT_VEC2, 
+                data_type:ShaderDataTypes::FloatVec2, 
             }, 
             VertexAttrib { 
                 name: String::from("texCoord"), 
                 role:AttributeRole::Custom,
-                data_type:ShaderDataTypes::FLOAT_VEC2, 
+                data_type:ShaderDataTypes::FloatVec2, 
             }
         ],
         uniform_attribs:vec![
@@ -57,10 +57,10 @@ thread_local! {
         instance_attribs:Vec::new(),
         blank_vertex:vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         vertex_size:4,
-        verticies_chunk_min_size:20,
+        verticies_chunk_min_size:100,
         verticies_chunk_grow_factor:1.1,
         verticies_chunk_max_size:2000,
-        indicies_chunk_min_size:1000,
+        indicies_chunk_min_size:400,
         indicies_chunk_grow_factor:1.1, 
         indicies_chunk_max_size:2000,
     })
@@ -69,7 +69,7 @@ thread_local! {
 pub struct Image {
     obj:MappedRenderObject,
     img:MappedTexture,
-    img_valid:bool
+    img_loaded:bool
 }
 
 impl Image {
@@ -102,9 +102,9 @@ impl Image {
 
         let mapped = MappedRenderObject::new(renderer, render_object);
 
-        let valid = img.valid();
+        let loaded = img.loaded();
 
-        Self { obj:mapped, img:img, img_valid:valid }
+        Self { obj:mapped, img:img, img_loaded:loaded }
     }
 
     pub fn from_mapped(renderer:&mut Renderer, transform:Transform2<f32>, mapped:MappedTexture) -> Self {
@@ -135,9 +135,17 @@ impl Image {
 
         let obj = MappedRenderObject::new(renderer, render_object);
 
-        let valid = mapped.valid();
+        let valid = mapped.loaded();
 
-        Self { obj:obj, img:mapped, img_valid:valid }
+        Self { obj:obj, img:mapped, img_loaded:valid }
+    }
+
+    pub fn update_texture_src(&mut self, renderer:&mut Renderer, src:&dyn BatchableTextureSource) {
+        self.img.update(renderer, src);
+    }
+
+    pub fn update_texture_mapped(&mut self, renderer:&mut Renderer, mapped:MappedTexture) {
+        self.img = mapped;
     }
 
     fn update_render_object(&mut self, renderer:&mut Renderer, transform:Transform2<f32>) {
@@ -165,14 +173,14 @@ impl Image {
             indicies:indicies
         };
 
-        self.obj.update(renderer, new_render_object)
+        self.obj.update(renderer, &new_render_object)
     }
 
     pub fn render(&mut self, renderer:&mut Renderer, transform:Transform2<f32>) {
-        if !self.img_valid && self.img.valid() {
+        if !self.img_loaded && self.img.loaded() {
             self.update_render_object(renderer, transform);
         }
         self.update_render_object(renderer, transform);
-        self.img_valid = self.img.valid();
+        self.img_loaded = self.img.loaded();
     }
 }

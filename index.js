@@ -1,5 +1,5 @@
 const organizer = import("./pkg/organizer");
 
 organizer.then(code=>{
-    code.line_test();
+    code.texture_update_test();
 }).catch(console.error);

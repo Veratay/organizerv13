@@ -1,10 +1,8 @@
-use std::{collections::HashMap, cell::{UnsafeCell, RefCell}, rc::Rc};
+use std::{collections::HashMap, cell::RefCell, rc::Rc};
 
-use guillotiere::{AtlasAllocator, size2, Allocation, AllocId};
+use guillotiere::{AtlasAllocator, size2, Allocation};
 use wasm_bindgen::UnwrapThrowExt;
 use web_sys::{WebGlTexture, WebGl2RenderingContext, HtmlImageElement};
-
-use crate::log_str;
 
 //TODO- make it so that the number of instances cannot grow larger than the max provided, by merging them.
 
@@ -181,7 +179,8 @@ pub struct BatchedTexture {
     remove_cache:Rc<RefCell<RemoveCache>>,
     texture_id:u32,
     allocation:Allocation,
-    valid:bool
+    loaded:bool,
+    updating:bool
 }
 
 pub struct FutureRemovedBatchedTexture {
@@ -197,6 +196,7 @@ impl PartialEq for BatchedTexture {
 
 impl Drop for BatchedTexture {
     fn drop(&mut self) {
+        if self.updating { return; }
         self.remove_cache.borrow_mut().remove(FutureRemovedBatchedTexture { texture_id: self.texture_id, allocation: self.allocation });
     }
 }
@@ -222,8 +222,8 @@ impl BatchedTexture {
         batcher.bind(self);
     }
 
-    pub fn valid(&self) -> bool {
-        self.valid
+    pub fn loaded(&self) -> bool {
+        self.loaded
     }
 }
 
@@ -257,7 +257,7 @@ impl RemoveCache {
         Self { inner:Vec::new() }
     }
 
-    pub fn remove(&mut self, texture:FutureRemovedBatchedTexture) {
+    fn remove(&mut self, texture:FutureRemovedBatchedTexture) {
         self.inner.push(texture);
     }
 
@@ -265,6 +265,7 @@ impl RemoveCache {
         for texture in self.inner.iter() {
             batcher.remove(texture.texture_id,texture.allocation);
         }
+        self.inner.clear();
     }
 }
 
@@ -306,6 +307,7 @@ impl TextureBatcher {
     }
 
     fn add(&mut self, src:&dyn BatchableTextureSource) -> BatchedTexture {
+        self.cleanup();
         let gl = self.gl.clone();
         let unique = src.unique_texture();
 
@@ -345,6 +347,8 @@ impl TextureBatcher {
     }
 
     fn update_batched(&mut self, batched_texture:&mut BatchedTexture, src:&dyn BatchableTextureSource) {
+        batched_texture.updating = true;
+
         let id = batched_texture.texture_id;
         let gl = self.gl.clone();
         let instance = self.instances.get(&id).expect_throw("Expected texture ID to be valid while updating");
@@ -352,12 +356,18 @@ impl TextureBatcher {
         if src.width() != batched_texture.allocation.rectangle.width() ||
             src.height() != batched_texture.allocation.rectangle.height() ||
             src.format() != instance.format {
-            *batched_texture = self.add(src);
-            return;
+                //called to save space for differently sized texture
+                self.cleanup();
+                //do it this way to remove old texture before adding new one, cannot assign by dereference because that would cause a drop,
+                //which would try to remove the allocation twice, which might panic(untested)
+                self.remove(batched_texture.texture_id, batched_texture.allocation);
+                *batched_texture = self.add(src);
+        } else {
+            instance.update_batched(&gl, &batched_texture.allocation, src);
+            batched_texture.loaded = src.valid();
         }
-        
-        instance.update_batched(&gl, &batched_texture.allocation, src);
-        batched_texture.valid = src.valid();
+
+        batched_texture.updating = false;
     }
 
     fn remove(&mut self, id:u32, allocation:Allocation) {
@@ -410,11 +420,12 @@ impl TextureBatcherInstance {
             let p = allocation.rectangle.min;
             src.tex_sub_image_2d(gl, p.x, p.y);
 
-            let mut result = BatchedTexture { 
+            let result = BatchedTexture { 
                 remove_cache: remove_cache,
                 texture_id: instance_id,
                 allocation: allocation,
-                valid:src.valid()
+                loaded:src.valid(),
+                updating:false
             };
 
             return Some(result);

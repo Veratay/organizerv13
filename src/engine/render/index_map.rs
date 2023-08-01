@@ -47,22 +47,37 @@ impl<T> IndexMap<T> {
         ValuesMut { inner: self.vec.iter_mut() }
     }
 
-    pub fn remove(&mut self, idx:usize) {
-        self.vec.retain(|(i,_)| idx!=*i);
+    pub fn remove(&mut self, idx:usize) -> T {
+        let i = match self.vec.binary_search_by_key(&idx, |&(u,_)| u) {
+            Ok(i) => i,
+            Err(_) => panic!("Removal idx does not exist")
+        };
+        self.vec.remove(i).1
     }
+    pub fn try_remove(&mut self, idx:usize) -> Option<T> {
+        let i = match self.vec.binary_search_by_key(&idx, |&(u,_)| u) {
+            Ok(i) => i,
+            Err(_) => return None
+        };
+        Some(self.vec.remove(i).1)
+    }
+}
+
+impl<T> IndexMap<T> where T:Debug {
+    
 }
 
 impl<T> Index<usize> for IndexMap<T> {
     type Output = T;
     fn index(&self, index: usize) -> &Self::Output {
-        let i = self.vec.binary_search_by_key(&index, |(s,t)| *s).unwrap();
+        let i = self.vec.binary_search_by_key(&index, |(s,_)| *s).unwrap();
         &self.vec[i].1
     }
 }
 
 impl<T> IndexMut<usize> for IndexMap<T> {
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-        let i = self.vec.binary_search_by_key(&index, |(s,t)| *s).unwrap();
+        let i = self.vec.binary_search_by_key(&index, |(s,_)| *s).unwrap();
         &mut self.vec[i].1
     }
 }

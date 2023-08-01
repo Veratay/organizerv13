@@ -1,32 +1,38 @@
-use crate::{log_str, engine::render::types::{quadratic_bezier::QuadraticBezier, triangle::Triangle}};
+use crate::{log_str, engine::render::{types::image::Image, renderer::Renderer, texture::RawTextureSource}};
 
-use nalgebra::Vector2;
+use nalgebra::{Transform2, Matrix3};
 
 extern crate wasm_bindgen;
 use std::{ rc::Rc, cell::RefCell};
 
 use wasm_bindgen::prelude::*;
 
-use wasm_bindgen::JsCast;
-
 extern crate console_error_panic_hook;
 use std::panic;
 
-use super::make_renderer;
-
 #[wasm_bindgen]
-pub fn bezier_test() {
-    log_str("starting texture test");
+pub fn texture_update_test() {
+    log_str("starting texture update test");
     panic::set_hook(Box::new(console_error_panic_hook::hook));
-    let mut renderer = make_renderer();
+    let document = web_sys::window().unwrap().document().unwrap();
+    let canvas = document.get_element_by_id("rootCanvas").unwrap();
+    let canvas: web_sys::HtmlCanvasElement = canvas.dyn_into::<web_sys::HtmlCanvasElement>().unwrap();
+    let mut renderer = Renderer::new(canvas);
 
-    let mut triangle = Triangle::new(&mut renderer, [
-        Vector2::new(0.0, 0.0),Vector2::new(0.5, 0.0),Vector2::new(0.5, 0.5)
-    ], [0.0,0.0,1.0,1.0]);
+    let mut images = Vec::new();
 
-    let mut curve = QuadraticBezier::new(&mut renderer,[
-        Vector2::new(0.0, 0.0),Vector2::new(0.5, 0.),Vector2::new(0.5, 0.5)
-    ],[1.0,0.0,0.0,1.0],0.01,0.01);
+    let image_count = 26;
+    let vertical_scale = 2.0;
+
+    for i in 0..image_count {
+        let scale = 1.0/image_count as f32;
+        let pos = -1.0 + scale + scale*2.0*i as f32;
+        images.push(Image::from_url(&mut renderer, Transform2::from_matrix_unchecked(Matrix3::new(
+            scale,0.0,pos,
+            0.0,scale*vertical_scale,0.0,
+            0.0,0.0,1.0
+        )), format!("./assets/sniff_{}.jpeg",i+1)))
+    }
 
     // Here we want to call `requestAnimationFrame` in a loop, but only a fixed
     // number of times. After it's done we want all our resources cleaned up. To
@@ -44,12 +50,22 @@ pub fn bezier_test() {
     let f = Rc::new(RefCell::new(None));
     let g = f.clone();
 
+    let mut i = 0.0;
     *g.borrow_mut() = Some(Closure::new(move || {
 
         // Set the body's text content to how many times this
         // requestAnimationFrame callback has fired.
-        curve.render();
-        triangle.render();
+        i += 0.001;
+        
+        for (i,img) in images.iter_mut().enumerate() {
+            let scale = 1.0/image_count as f32;
+            let pos = -1.0 + scale + scale*2.0*i as f32;
+            img.render(&mut renderer, Transform2::from_matrix_unchecked(Matrix3::new(
+                scale,0.0,pos,
+                0.0,scale*vertical_scale,0.0,
+                0.0,0.0,1.0
+            )));
+        }
         renderer.render();
 
         // Schedule ourself for another requestAnimationFrame callback.

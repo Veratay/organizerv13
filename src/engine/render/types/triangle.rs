@@ -1,8 +1,8 @@
 use std::rc::Rc;
 
-use nalgebra::{Point2, Vector2};
+use nalgebra::Vector2;
 
-use crate::{engine::render::{render_object::{RenderType, VertexAttrib, ShaderDataTypes, RenderObject, UniformAttrib, UniformRole, AttributeRole, InstancedData}, renderer::{Renderer, MappedRenderObject, UniformBlock, Uniform, MappedTexture}}, log_str, log_i32};
+use crate::{engine::render::{render_object::{RenderType, VertexAttrib, ShaderDataTypes, RenderObject, AttributeRole}, renderer::{Renderer, MappedRenderObject, UniformBlock}}, log_str};
 
 thread_local! {
     static TRIANGLE_RENDER_TYPE: Rc<RenderType> = Rc::new(RenderType {
@@ -34,12 +34,12 @@ thread_local! {
             VertexAttrib { 
                 name: String::from("pos"), 
                 role:AttributeRole::Custom,
-                data_type:ShaderDataTypes::FLOAT_VEC2, 
+                data_type:ShaderDataTypes::FloatVec2, 
             },
             VertexAttrib {
                 name: String::from("vColor"),
                 role:AttributeRole::Custom,
-                data_type:ShaderDataTypes::FLOAT_VEC4,
+                data_type:ShaderDataTypes::FloatVec4,
             },
             
         ],
@@ -79,7 +79,7 @@ impl Triangle {
         };
 
         let obj = MappedRenderObject::new(renderer, render_object);
-
+        log_str(&format!("triangle id is: {:?}",obj));
         Self { obj:obj }
     }
 

@@ -1,8 +1,8 @@
 use std::{rc::Rc,f32::consts::{FRAC_PI_4,FRAC_PI_2, TAU, SQRT_2,PI}};
 
-use nalgebra::{Point2, Vector2};
+use nalgebra::Vector2;
 
-use crate::{engine::render::{render_object::{RenderType, VertexAttrib, ShaderDataTypes, RenderObject, UniformAttrib, UniformRole, AttributeRole, InstancedData}, renderer::{Renderer, MappedRenderObject, UniformBlock, Uniform, MappedTexture}}, log_str, log_i32};
+use crate::engine::render::{render_object::{RenderType, VertexAttrib, ShaderDataTypes, RenderObject, AttributeRole}, renderer::{Renderer, MappedRenderObject, UniformBlock}};
 
 thread_local! {
     static QUADRATIC_BEZIER_RENDER_TYPE: Rc<RenderType> = Rc::new(RenderType {
@@ -106,8 +106,7 @@ thread_local! {
                 if (d < 0.) {
                     result.a = s;
                 } else {
-                    result.a = 0.5;
-                    // discard;
+                    discard;
                 }
                 FragColor = result;
             }"
@@ -116,12 +115,12 @@ thread_local! {
             VertexAttrib { 
                 name: String::from("pos"), 
                 role:AttributeRole::Custom,
-                data_type:ShaderDataTypes::FLOAT_VEC2, 
+                data_type:ShaderDataTypes::FloatVec2, 
             },
             VertexAttrib {
                 name: String::from("vColor"),
                 role:AttributeRole::Custom,
-                data_type:ShaderDataTypes::FLOAT_VEC4,
+                data_type:ShaderDataTypes::FloatVec4,
             },
             VertexAttrib {
                 name:String::from("vThickness"),
@@ -131,17 +130,17 @@ thread_local! {
             VertexAttrib { 
                 name: String::from("points1"),
                 role:AttributeRole::Custom,
-                data_type:ShaderDataTypes::FLOAT_VEC2, 
+                data_type:ShaderDataTypes::FloatVec2, 
             }, 
             VertexAttrib { 
                 name: String::from("points2"),
                 role:AttributeRole::Custom,
-                data_type:ShaderDataTypes::FLOAT_VEC2, 
+                data_type:ShaderDataTypes::FloatVec2, 
             }, 
             VertexAttrib { 
                 name: String::from("points3"),
                 role:AttributeRole::Custom,
-                data_type:ShaderDataTypes::FLOAT_VEC2, 
+                data_type:ShaderDataTypes::FloatVec2, 
             }, 
             VertexAttrib { 
                 name: String::from("vSmooth"), 
@@ -175,7 +174,6 @@ impl QuadraticBezier {
         let ctheta = (points[1].y-m.y).atan2(points[1].x-m.x);
         let copposite = f32::signum(f32::sin(ctheta));
         let c:f32 = copposite*((points[1]-m).magnitude()/2.0+offset*2.0);
-        log_str(&theta.to_string());
         let t0 = if copposite == -1.0 { theta+FRAC_PI_2+FRAC_PI_4} else { theta+PI+FRAC_PI_4};
         let t1 = if copposite == -1.0 { theta+FRAC_PI_4 } else { theta+TAU-FRAC_PI_4};
         let (x0,y0) = (points[0].x+f32::cos(t0)*offset*SQRT_2,points[0].y+f32::sin(t0)*offset*SQRT_2);

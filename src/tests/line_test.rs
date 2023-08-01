@@ -1,14 +1,11 @@
-use crate::{log_str, engine::render::{types::{quadratic_bezier::QuadraticBezier, image::Image, triangle::Triangle, line::{Line,EndBehavior}}, renderer::Renderer}};
+use crate::{log_str, engine::render::types::line::{Line,EndBehavior}};
 
-use nalgebra::{Transform2, Matrix3, Point2, Vector2};
+use nalgebra::Vector2;
 
 extern crate wasm_bindgen;
 use std::{ rc::Rc, cell::RefCell};
 
 use wasm_bindgen::prelude::*;
-
-use js_sys::{Float32Array, Uint16Array, ArrayBuffer};
-use wasm_bindgen::{JsCast};
 
 extern crate console_error_panic_hook;
 use std::panic;
@@ -24,6 +21,10 @@ pub fn line_test() {
     let mut line =  Line::new(&mut renderer,[
         Vector2::new(0.0, 0.0),Vector2::new(0.5, 0.0)
     ],[1.0,0.0,0.0,1.0],0.01,0.01, EndBehavior::Clipped);
+
+    let mut line2 =  Line::new(&mut renderer,[
+        Vector2::new(0.0, 0.0),Vector2::new(0.5, 0.0)
+    ],[1.0,0.0,0.0,1.0],0.01,0.01, EndBehavior::Rounded);
 
     // Here we want to call `requestAnimationFrame` in a loop, but only a fixed
     // number of times. After it's done we want all our resources cleaned up. To
@@ -41,13 +42,9 @@ pub fn line_test() {
     let f = Rc::new(RefCell::new(None));
     let g = f.clone();
 
-    let mut i = 0.0;
     *g.borrow_mut() = Some(Closure::new(move || {
-
-        // Set the body's text content to how many times this
-        // requestAnimationFrame callback has fired.
-        i += 0.001;
         line.render();
+        line2.render();
         renderer.render();
 
         // Schedule ourself for another requestAnimationFrame callback.
