@@ -1,15 +1,16 @@
-use std::{rc::Rc,f32::consts::{FRAC_PI_4,FRAC_PI_2, SQRT_2}};
+use std::{rc::Rc,f32::consts::{FRAC_PI_4,FRAC_PI_2, SQRT_2, PI}};
 
-use nalgebra::Vector2;
+use cgmath::{Vector2, Vector4};
 
-use crate::engine::render::{render_object::{RenderType, VertexAttrib, ShaderDataTypes, RenderObject, AttributeRole}, renderer::{Renderer, MappedRenderObject, UniformBlock}};
+use crate::{engine::render::{render_object::{RenderType, VertexAttrib, ShaderDataTypes, RenderObject, AttributeRole}, renderer::{Renderer, VertexData}}, log_str};
 
 thread_local! {
-    static LINE_RENDER_TYPE: Rc<RenderType> = Rc::new(RenderType {
-        name:String::from("Line"),
-        instanced:None,
-        vertex_shader:String::from(
+    static LINE_RENDER_TYPE: Rc<RenderType> = Rc::new(RenderType::new_batched_growable(
+        String::from(
             "#version 300 es
+
+            uniform mat4 view;
+            uniform mat4 projection;
             
             in vec2 pos;
             in vec4 vColor;
@@ -36,7 +37,7 @@ thread_local! {
                 fsmooth = vSmooth;
             }"
         ),
-        fragment_shader:String::from(
+        String::from(
             "# version 300 es
             precision highp float;
             // start point
@@ -75,12 +76,17 @@ thread_local! {
                 FragColor = result;
             }"
         ),
-        vertex_attribs:vec![
+        vec![
             VertexAttrib { 
                 name: String::from("pos"), 
                 role:AttributeRole::Custom,
-                data_type:ShaderDataTypes::FloatVec2, 
+                data_type:ShaderDataTypes::FloatVec3, 
             },
+            VertexAttrib {
+                name: String::from("vTexcoord"),
+                role: AttributeRole::Custom,
+                data_type: ShaderDataTypes::FloatVec2
+            }
             VertexAttrib {
                 name: String::from("vColor"),
                 role:AttributeRole::Custom,
@@ -106,22 +112,23 @@ thread_local! {
                 role:AttributeRole::Custom,
                 data_type:ShaderDataTypes::FLOAT, 
             },
-        ],
-        instance_attribs:Vec::new(),
-        uniform_attribs:Vec::new(),
-        blank_vertex:vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        vertex_size:14,
-        verticies_chunk_min_size:20,
-        verticies_chunk_grow_factor:1.1,
-        verticies_chunk_max_size:2000,
-        indicies_chunk_min_size:1000,
-        indicies_chunk_grow_factor:1.1, 
-        indicies_chunk_max_size:2000,
-    })
+        ], 
+        Vec::new(), 
+        Vec::new(),
+        20, 
+        1000, 
+        30, 
+        1500, 
+        2.0, 
+        2.0
+    ));
 }
 
 pub struct Line {
-    obj:MappedRenderObject,
+    obj:RenderObject,
+    end_behavior:EndBehavior,
+    smooth:f32,
+    thickness:f32
 }
 
 pub enum EndBehavior {
@@ -130,9 +137,9 @@ pub enum EndBehavior {
 }
 
 impl Line {
-    pub fn new(renderer:&mut Renderer, points:[Vector2<f32>; 2], color:[f32; 4], thickness:f32, smooth:f32, end_behavior:EndBehavior) -> Self {
+    pub fn new(renderer:&mut Renderer, points:[Vector2<f32>; 2], color:Vector4<f32>, thickness:f32, smooth:f32, end_behavior:EndBehavior) -> Self {
         
-        let theta = (points[1].y-points[0].y).atan2(points[1].x-points[0].x);
+        let theta = (points[0].y-points[1].y).atan2(points[0].x-points[1].x);
 
         let t0 = match end_behavior {
                 EndBehavior::Rounded => theta+FRAC_PI_2+FRAC_PI_4,
@@ -147,31 +154,62 @@ impl Line {
         let c = match end_behavior {
             EndBehavior::Clipped => offset,
             EndBehavior::Rounded => offset*SQRT_2
-        }; 
-        let (x0,y0) = (points[0].x+f32::cos(t0)*c,points[0].y+f32::sin(t0)*c);
-        let (x1,y1) = (points[1].x+f32::cos(t1)*c,points[1].y+f32::sin(t1)*c);
-        let (x2,y2) = (points[0].x+f32::cos(-t0)*c,points[0].y+f32::sin(-t0)*c);
-        let (x3,y3) = (points[1].x+f32::cos(-t1)*c,points[1].y+f32::sin(-t1)*c);
-
-        let verticies = vec![
-            x0,y0, color[0],color[1],color[2],color[3], thickness, points[0].x,points[0].y,points[1].x,points[1].y, smooth,
-            x1,y1, color[0],color[1],color[2],color[3], thickness, points[0].x,points[0].y,points[1].x,points[1].y, smooth,
-            x2,y2, color[0],color[1],color[2],color[3], thickness, points[0].x,points[0].y,points[1].x,points[1].y, smooth,
-            x3,y3, color[0],color[1],color[2],color[3], thickness, points[0].x,points[0].y,points[1].x,points[1].y, smooth,
-        ];
-
-        let indicies = vec![0,1,3, 3,2,0];
-
-        let render_object = RenderObject {
-            type_id:LINE_RENDER_TYPE.with(|f| f.clone()),
-            uniforms:UniformBlock::default(),
-            verticies:verticies,
-            indicies:indicies
         };
 
-        let obj = MappedRenderObject::new(renderer, render_object);
+        let p0 = points[0] + Vector2::new(f32::cos(t0)*c, f32::sin(t0)*c);
+        let p1 = points[1] + Vector2::new(f32::cos(t1)*c, f32::sin(t1)*c);
+        let p2 = points[1] + Vector2::new(f32::cos(t0+PI)*c, f32::sin(t0+PI)*c);
+        let p3 = points[0] + Vector2::new(f32::cos(t1+PI)*c, f32::sin(t1+PI)*c);
 
-        Self { obj:obj }
+        let mut render_object = RenderObject::new(LINE_RENDER_TYPE.with(|f| f.clone()));
+        render_object.add_triangle([0,1,2]);
+        render_object.add_triangle([2,3,0]);
+
+        render_object.set_v_datas(0, "pos", vec![VertexData::FloatVec2(p0),VertexData::FloatVec2(p1),VertexData::FloatVec2(p2),VertexData::FloatVec2(p3)]);
+        render_object.set_v_datas(0, "vColor", vec![VertexData::FloatVec4(color.clone()),VertexData::FloatVec4(color.clone()),VertexData::FloatVec4(color.clone()),VertexData::FloatVec4(color.clone())]);
+        render_object.set_v_datas(0, "vThickness", vec![VertexData::Float(thickness),VertexData::Float(thickness),VertexData::Float(thickness),VertexData::Float(thickness)]);
+        render_object.set_v_datas(0, "vSmooth", vec![VertexData::Float(smooth),VertexData::Float(smooth),VertexData::Float(smooth),VertexData::Float(smooth)]);
+        render_object.set_v_datas(0, "points1", vec![VertexData::FloatVec2(points[0].clone()),VertexData::FloatVec2(points[0].clone()),VertexData::FloatVec2(points[0].clone()),VertexData::FloatVec2(points[0].clone())]);
+        render_object.set_v_datas(0, "points2", vec![VertexData::FloatVec2(points[1].clone()),VertexData::FloatVec2(points[1].clone()),VertexData::FloatVec2(points[1].clone()),VertexData::FloatVec2(points[1].clone())]);
+
+        render_object.update(renderer);
+        Self { obj:render_object, end_behavior:end_behavior, smooth:smooth, thickness:thickness }
+    }
+
+    pub fn update_points(&mut self, renderer: &mut Renderer, p1:Vector2<f32>, p2:Vector2<f32>) {
+
+        Self::set_bounding_box(&mut self.obj, &self.end_behavior, [p1,p2], self.thickness, self.smooth);
+        
+        self.obj.set_v_datas(0, "points1", vec![VertexData::FloatVec2(p1.clone()),VertexData::FloatVec2(p1.clone()),VertexData::FloatVec2(p1.clone()),VertexData::FloatVec2(p1.clone())]);
+        self.obj.set_v_datas(0, "points2", vec![VertexData::FloatVec2(p2.clone()),VertexData::FloatVec2(p2.clone()),VertexData::FloatVec2(p2.clone()),VertexData::FloatVec2(p2.clone())]);
+        
+        self.obj.update(renderer);
+    }
+
+    fn set_bounding_box(render_obj:&mut RenderObject, end_behavior:&EndBehavior, points:[Vector2<f32>; 2], thickness:f32, smooth:f32) {
+        let theta = (points[0].y-points[1].y).atan2(points[0].x-points[1].x);
+
+        let t0 = match end_behavior {
+                EndBehavior::Rounded => theta+FRAC_PI_2+FRAC_PI_4,
+                EndBehavior::Clipped => theta+FRAC_PI_2
+            };
+        let t1 = match end_behavior {
+            EndBehavior::Rounded => theta+FRAC_PI_4,
+            EndBehavior::Clipped => theta+FRAC_PI_2
+        };
+        let offset = thickness + smooth;
+    
+        let c = match end_behavior {
+            EndBehavior::Clipped => offset,
+            EndBehavior::Rounded => offset*SQRT_2
+        };
+
+        let p0 = points[0] + Vector2::new(f32::cos(t0)*c, f32::sin(t0)*c);
+        let p1 = points[1] + Vector2::new(f32::cos(t1)*c, f32::sin(t1)*c);
+        let p2 = points[1] + Vector2::new(f32::cos(t0+PI)*c, f32::sin(t0+PI)*c);
+        let p3 = points[0] + Vector2::new(f32::cos(t1+PI)*c, f32::sin(t1+PI)*c);
+
+        render_obj.set_v_datas(0, "pos", vec![VertexData::FloatVec2(p0),VertexData::FloatVec2(p1),VertexData::FloatVec2(p2),VertexData::FloatVec2(p3)]);
     }
 
     pub fn render(&mut self) {

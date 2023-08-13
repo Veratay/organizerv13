@@ -1,4 +1,4 @@
-use crate::{log_str, engine::render::{types::image::Image, renderer::Renderer, texture::RawTextureSource}};
+use crate::{log_str, engine::render::{types::image::Image, renderer::Renderer}};
 
 use nalgebra::{Transform2, Matrix3};
 
@@ -50,12 +50,7 @@ pub fn texture_update_test() {
     let f = Rc::new(RefCell::new(None));
     let g = f.clone();
 
-    let mut i = 0.0;
     *g.borrow_mut() = Some(Closure::new(move || {
-
-        // Set the body's text content to how many times this
-        // requestAnimationFrame callback has fired.
-        i += 0.001;
         
         for (i,img) in images.iter_mut().enumerate() {
             let scale = 1.0/image_count as f32;

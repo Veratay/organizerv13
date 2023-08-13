@@ -1,27 +1,28 @@
 use std::rc::Rc;
 
-use nalgebra::{Transform2, Point2};
+use cgmath::{Vector2, Matrix3, Vector3, Matrix4, Vector4};
 
-use crate::engine::render::{render_object::{RenderType, VertexAttrib, ShaderDataTypes, RenderObject, UniformAttrib, UniformRole, AttributeRole}, renderer::{Renderer, MappedRenderObject, UniformBlock, Uniform, MappedTexture}, texture::BatchableTextureSource};
+use crate::{engine::render::{render_object::{RenderType, VertexAttrib, ShaderDataTypes, RenderObject, UniformAttrib, UniformRole, AttributeRole}, renderer::{Renderer, UniformData, MappedTexture, VertexData}, texture::{BatchableTextureSource, TextureFilter}}, log_str};
 
 thread_local! {
-    static IMAGE_RENDER_TYPE: Rc<RenderType> = Rc::new(RenderType {
-        name:String::from("Rect"),
-        instanced:None,
-        vertex_shader:String::from(
+    static IMAGE_RENDER_TYPE: Rc<RenderType> = Rc::new(RenderType::new_batched_growable(
+        String::from(
             "#version 300 es
+
+            uniform mat4 view;
+            uniform mat4 projection;
     
-            in vec2 position;
+            in vec3 position;
             in vec2 texCoord;
 
             out vec2 vTexCoord;
     
             void main() {
-                gl_Position = vec4(position, 0.0, 1.0);
+                gl_Position = projection * view * vec4(position, 1.0);
                 vTexCoord = texCoord;
             }"
         ),
-        fragment_shader:String::from(
+        String::from(
             "#version 300 es
 
             precision mediump float;
@@ -34,13 +35,16 @@ thread_local! {
 
             void main() {
                 fragColor = texture(texture0, vTexCoord);
+                if(fragColor.w == 0.0) {
+                    discard;
+                }
             }"
         ),
-        vertex_attribs:vec![
+        vec![
             VertexAttrib { 
                 name: String::from("position"),
                 role:AttributeRole::Custom,
-                data_type:ShaderDataTypes::FloatVec2, 
+                data_type:ShaderDataTypes::FloatVec3, 
             }, 
             VertexAttrib { 
                 name: String::from("texCoord"), 
@@ -48,139 +52,163 @@ thread_local! {
                 data_type:ShaderDataTypes::FloatVec2, 
             }
         ],
-        uniform_attribs:vec![
+        vec![
             UniformAttrib {
                 name:String::from("texture0"),
-                role:UniformRole::Texture
+                role:UniformRole::Custom
+            },
+            UniformAttrib {
+                name:String::from("view"),
+                role:UniformRole::View
+            },
+            UniformAttrib {
+                name:String::from("projection"),
+                role:UniformRole::Projection
             }
         ],
-        instance_attribs:Vec::new(),
-        blank_vertex:vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        vertex_size:4,
-        verticies_chunk_min_size:100,
-        verticies_chunk_grow_factor:1.1,
-        verticies_chunk_max_size:2000,
-        indicies_chunk_min_size:400,
-        indicies_chunk_grow_factor:1.1, 
-        indicies_chunk_max_size:2000,
-    })
+        Vec::new(),
+        100,
+        2000,
+        400,
+        2000,
+        1.1,
+        1.1
+    ));
 }
 
 pub struct Image {
-    obj:MappedRenderObject,
+    obj:RenderObject,
     img:MappedTexture,
+    pos:Matrix4<f32>,
     img_loaded:bool
 }
 
 impl Image {
-    pub fn from_url(renderer:&mut Renderer, transform:Transform2<f32>, url:String) -> Self {
-        let img = renderer.upload_image_from_url(url);
-
+    fn setup_object(renderer:&mut Renderer, transform:Matrix4<f32>, img:&MappedTexture) -> RenderObject {
         let (minx,miny) = img.get_texcoord(&renderer,0f32, 0f32);
         let (maxx, maxy) = img.get_texcoord(&renderer,1.0, 1.0);
 
-        let v0:Point2<f32> = transform * Point2::<f32>::new(1.0, 1.0);
-        let v1:Point2<f32> = transform * Point2::<f32>::new(-1.0, 1.0);
-        let v2:Point2<f32> = transform * Point2::<f32>::new(-1.0, -1.0);
-        let v3:Point2<f32> = transform * Point2::<f32>::new(1.0, -1.0);
+        let v0:Vector3<f32> = (transform * Vector4::new(1.0, 1.0,0.0,1.0)).truncate();
+        let v1:Vector3<f32> = (transform * Vector4::new(-1.0, 1.0,0.0,1.0)).truncate();
+        let v2:Vector3<f32> = (transform * Vector4::new(-1.0, -1.0,0.0,1.0)).truncate();
+        let v3:Vector3<f32> = (transform * Vector4::new(1.0, -1.0,0.0,1.0)).truncate();
 
-        let verticies = vec![
-            v0.x,v0.y, maxx, maxy,
-            v1.x,v1.y, minx,maxy,
-            v2.x,v2.y, minx,miny,
-            v3.x,v3.y, maxx,miny
-        ];
+        //  log_str(&format!("v0: {:?}, v0: {:?}, v0: {:?}, v0: {:?},",v0,v1,v2,v3));
 
-        let indicies:Vec<u16> = vec![0,1,2, 0,2,3];
+        let mut render_object = RenderObject::new(IMAGE_RENDER_TYPE.with(|f| f.clone()));
+        
 
-        let render_object = RenderObject {
-            type_id:IMAGE_RENDER_TYPE.with(|f| f.clone()),
-            uniforms:UniformBlock::new(vec![Uniform::new("texture0", crate::engine::render::renderer::UnifromType::Texture(img.clone()))]),
-            verticies:verticies,
-            indicies:indicies
-        };
+        render_object.add_triangle([0,1,2]);
+        render_object.add_triangle([0,2,3]);
 
-        let mapped = MappedRenderObject::new(renderer, render_object);
+        render_object.set_v_datas(0, "position", vec![VertexData::FloatVec3(v0),VertexData::FloatVec3(v1),VertexData::FloatVec3(v2),VertexData::FloatVec3(v3)]);
+        render_object.set_v_datas(0, "texCoord", vec![VertexData::FloatVec2(Vector2 { x: maxx, y: maxy }),VertexData::FloatVec2(Vector2 { x: minx, y: maxy }),VertexData::FloatVec2(Vector2 { x: minx, y: miny }),VertexData::FloatVec2(Vector2 { x: maxx, y: miny })]);
+        render_object
+    }
+
+    pub fn from_url(renderer:&mut Renderer, transform:Matrix4<f32>, url:String, min_filter:TextureFilter, mag_filter:TextureFilter) -> Self {
+        let img = renderer.upload_image_from_url(url,min_filter,mag_filter);
+
+        let mut render_object = Self::setup_object(renderer, transform,&img);
+
+        render_object.set_uniform("texture0", UniformData::Texture(Some(img.clone())));
+        render_object.set_uniform("projection", UniformData::Global);
+        render_object.set_uniform("view", UniformData::Global);
 
         let loaded = img.loaded();
 
-        Self { obj:mapped, img:img, img_loaded:loaded }
+        if loaded { render_object.update(renderer); }
+
+        Self { obj:render_object, img:img, img_loaded:loaded, pos:transform }
     }
 
-    pub fn from_mapped(renderer:&mut Renderer, transform:Transform2<f32>, mapped:MappedTexture) -> Self {
+    pub fn from_mapped(renderer:&mut Renderer, transform:Matrix4<f32>, img:MappedTexture) -> Self {
 
-        let (minx,miny) = mapped.get_texcoord(&renderer, 0f32, 0f32);
-        let (maxx, maxy) = mapped.get_texcoord(&renderer,1.0, 1.0);
+        let mut render_object = Self::setup_object(renderer, transform,&img);
 
-        let v0:Point2<f32> = transform * Point2::<f32>::new(1.0, 1.0);
-        let v1:Point2<f32> = transform * Point2::<f32>::new(-1.0, 1.0);
-        let v2:Point2<f32> = transform * Point2::<f32>::new(-1.0, -1.0);
-        let v3:Point2<f32> = transform * Point2::<f32>::new(1.0, -1.0);
+        render_object.set_uniform("texture0", UniformData::Texture(Some(img.clone())));
+        render_object.set_uniform("projection", UniformData::Global);
+        render_object.set_uniform("view", UniformData::Global);
 
-        let verticies = vec![
-            v0.x,v0.y, maxx, maxy,
-            v1.x,v1.y, minx,maxy,
-            v2.x,v2.y, minx,miny,
-            v3.x,v3.y, maxx,miny
-        ];
+        let loaded = img.loaded();
 
-        let indicies:Vec<u16> = vec![0,1,2, 0,2,3];
-
-        let render_object = RenderObject {
-            type_id:IMAGE_RENDER_TYPE.with(|f| f.clone()),
-            uniforms:UniformBlock::new(vec![Uniform::new("texture0", crate::engine::render::renderer::UnifromType::Texture(mapped.clone()))]),
-            verticies:verticies,
-            indicies:indicies
-        };
-
-        let obj = MappedRenderObject::new(renderer, render_object);
-
-        let valid = mapped.loaded();
-
-        Self { obj:obj, img:mapped, img_loaded:valid }
+        Self { obj:render_object, img:img, img_loaded:loaded, pos:transform }
     }
 
     pub fn update_texture_src(&mut self, renderer:&mut Renderer, src:&dyn BatchableTextureSource) {
         self.img.update(renderer, src);
     }
 
-    pub fn update_texture_mapped(&mut self, renderer:&mut Renderer, mapped:MappedTexture) {
+    pub fn update_texture_mapped(&mut self, mapped:MappedTexture) {
         self.img = mapped;
     }
 
-    fn update_render_object(&mut self, renderer:&mut Renderer, transform:Transform2<f32>) {
+    
+    // fn update_render_object(&mut self, renderer:&mut Renderer, transform:Transform2<f32>) {
+    //     let (minx,miny) = self.img.get_texcoord(&renderer, 0f32, 0f32);
+    //     let (maxx, maxy) = self.img.get_texcoord(&renderer,1.0, 1.0);
+
+    //     let v0:Point2<f32> = transform * Point2::<f32>::new(1.0, 1.0);
+    //     let v1:Point2<f32> = transform * Point2::<f32>::new(-1.0, 1.0);
+    //     let v2:Point2<f32> = transform * Point2::<f32>::new(-1.0, -1.0);
+    //     let v3:Point2<f32> = transform * Point2::<f32>::new(1.0, -1.0);
+
+    //     let verticies = vec![
+    //         v0.x,v0.y, maxx, maxy,
+    //         v1.x,v1.y, minx,maxy,
+    //         v2.x,v2.y, minx,miny,
+    //         v3.x,v3.y, maxx,miny
+    //     ];
+
+    //     let indicies:Vec<u16> = vec![0,1,2, 0,2,3];
+
+    //     // let new_render_object = RenderObject {
+    //     //     type_id:IMAGE_RENDER_TYPE.with(|f| f.clone()),
+    //     //     uniforms:UniformBlock::new(vec![Uniform::new("texture0", crate::engine::render::renderer::UnifromData::Texture(self.img.clone()))]),
+    //     //     verticies:verticies,
+    //     //     indicies:indicies
+    //     // };
+
+    //     // self.allocation.update(renderer, &new_render_object)
+    // }
+
+    fn update_texcoords(&mut self, renderer:&mut Renderer) {
         let (minx,miny) = self.img.get_texcoord(&renderer, 0f32, 0f32);
         let (maxx, maxy) = self.img.get_texcoord(&renderer,1.0, 1.0);
-
-        let v0:Point2<f32> = transform * Point2::<f32>::new(1.0, 1.0);
-        let v1:Point2<f32> = transform * Point2::<f32>::new(-1.0, 1.0);
-        let v2:Point2<f32> = transform * Point2::<f32>::new(-1.0, -1.0);
-        let v3:Point2<f32> = transform * Point2::<f32>::new(1.0, -1.0);
-
-        let verticies = vec![
-            v0.x,v0.y, maxx, maxy,
-            v1.x,v1.y, minx,maxy,
-            v2.x,v2.y, minx,miny,
-            v3.x,v3.y, maxx,miny
-        ];
-
-        let indicies:Vec<u16> = vec![0,1,2, 0,2,3];
-
-        let new_render_object = RenderObject {
-            type_id:IMAGE_RENDER_TYPE.with(|f| f.clone()),
-            uniforms:UniformBlock::new(vec![Uniform::new("texture0", crate::engine::render::renderer::UnifromType::Texture(self.img.clone()))]),
-            verticies:verticies,
-            indicies:indicies
-        };
-
-        self.obj.update(renderer, &new_render_object)
+        self.obj.set_v_datas(0, "texCoord", vec![VertexData::FloatVec2(Vector2 { x: maxx, y: maxy }),VertexData::FloatVec2(Vector2 { x: minx, y: maxy }),VertexData::FloatVec2(Vector2 { x: minx, y: miny }),VertexData::FloatVec2(Vector2 { x: maxx, y: miny })]);
     }
 
-    pub fn render(&mut self, renderer:&mut Renderer, transform:Transform2<f32>) {
-        if !self.img_loaded && self.img.loaded() {
-            self.update_render_object(renderer, transform);
+    fn update_pos(&mut self, transform:Matrix4<f32>) {
+        let v0:Vector3<f32> = (transform * Vector4::new(1.0, 1.0,0.0,1.0)).truncate();
+        let v1:Vector3<f32> = (transform * Vector4::new(-1.0, 1.0,0.0,1.0)).truncate();
+        let v2:Vector3<f32> = (transform * Vector4::new(-1.0, -1.0,0.0,1.0)).truncate();
+        let v3:Vector3<f32> = (transform * Vector4::new(1.0, -1.0,0.0,1.0)).truncate();
+
+        self.obj.set_v_datas(0, "position", vec![VertexData::FloatVec3(v0),VertexData::FloatVec3(v1),VertexData::FloatVec3(v2),VertexData::FloatVec3(v3)]);
+    }
+
+    pub fn render(&mut self, renderer:&mut Renderer, transform:Matrix4<f32>) {
+        if (
+            if !self.img_loaded && self.img.loaded() {
+                self.update_texcoords(renderer);
+                self.img_loaded = true;
+                true
+            } else { false } ||
+            if self.pos != transform {
+                self.update_pos(transform);
+                self.pos = transform;
+                true
+            } else { false } 
+        ) {
+            self.obj.update(renderer);
         }
-        self.update_render_object(renderer, transform);
-        self.img_loaded = self.img.loaded();
+    }
+
+    pub fn render_unchanged(&mut self, renderer:&mut Renderer) {
+        if !self.img_loaded && self.img.loaded() {
+            self.update_texcoords(renderer);
+            self.img_loaded = true;
+            self.obj.update(renderer);
+        }
     }
 }

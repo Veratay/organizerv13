@@ -1,11 +1,14 @@
 use std::{collections::HashMap, rc::{Rc, Weak}, mem, cell::RefCell, fmt::Debug};
 
+use cgmath::{Point3, Rad, Matrix4, Vector2, Vector3, Vector4};
 use wasm_bindgen::{JsCast, UnwrapThrowExt, prelude::Closure};
 use web_sys::{WebGl2RenderingContext, WebGlProgram, HtmlCanvasElement, WebGlUniformLocation, HtmlImageElement, Event};
 
 use crate::log_str;
 
-use super::{render_object::{GlBuffers, RenderType, RenderObject}, texture::{TextureBatcher, BatchedTexture, BatchableTextureSource, ImageTextureSource, TempBlankTextureSource, UpdateCache}, index_map::IndexMap};
+use gloo_console::warn;
+
+use super::{render_object::{GlBuffers, RenderType, RenderObject, UniformAttrib, UniformRole}, texture::{TextureBatcher, BatchedTexture, BatchableTextureSource, ImageTextureSource, TempBlankTextureSource, UpdateCache, TextureFormat, TextureFilter}, index_map::IndexMap, camera::{Camera, Projection}};
 
 //TODO- maybe find a better way to approach fragmentation when large number of textures are being used in one rendertype, 
 //because if textures are inserted whereever there is space and the texture batcher instances are getting full, 
@@ -14,13 +17,22 @@ use super::{render_object::{GlBuffers, RenderType, RenderObject}, texture::{Text
 //typedef for render object uuid
 
 const BATCH_TEXTURE_SIZE:i32 = 8192;
+const DEFAULT_FOV_Y:Rad<f32> = Rad(1.22173);
+const DEFAULT_Z_NEAR:f32 = 0.01;
+const DEFAULT_Z_FAR:f32 = 100.0;
 
+#[derive(Debug)]
 pub struct Renderer {
     gl:WebGl2RenderingContext,
     canvas:HtmlCanvasElement,
-    render_batchers:HashMap<String,RenderBatcher>,
+    render_batchers:HashMap<*const RenderType,RenderBatcher>,
     texture_batcher:TextureBatcher,
-    loaded_images:HashMap<String, Weak<RefCell<BatchedTexture>>>
+    loaded_images:HashMap<String, Weak<RefCell<BatchedTexture>>>,
+    camera:Camera,
+    projection:Projection,
+    pub fovy:Rad<f32>,
+    pub znear:f32,
+    pub zfar:f32
 }
 
 impl PartialEq for Renderer {
@@ -35,38 +47,47 @@ impl Renderer {
 
         //config
         gl.pixel_storei(WebGl2RenderingContext::UNPACK_FLIP_Y_WEBGL, 1);
+        gl.enable(WebGl2RenderingContext::DEPTH_TEST);
         gl.enable(WebGl2RenderingContext::BLEND);
         gl.blend_func(WebGl2RenderingContext::SRC_ALPHA, WebGl2RenderingContext::ONE_MINUS_SRC_ALPHA);
+
+        let width = canvas.width();
+        let height = canvas.height();
 
         Self { 
             gl: gl.clone(),
             canvas: canvas, 
             render_batchers: HashMap::new(),
             texture_batcher:TextureBatcher::new(gl, BATCH_TEXTURE_SIZE, BATCH_TEXTURE_SIZE),
-            loaded_images:HashMap::new()
+            loaded_images:HashMap::new(),
+            camera: Camera::new(Point3::new(0.0, 0.0, 1.0), Rad(-1.57079633), Rad(0.0)),
+            projection: Projection::new(width, height, DEFAULT_FOV_Y, DEFAULT_Z_NEAR, DEFAULT_Z_FAR),
+            fovy:DEFAULT_FOV_Y,
+            znear:DEFAULT_Z_NEAR,
+            zfar:DEFAULT_Z_FAR
         }
     }
 
-    fn add(&mut self, object:&RenderObject) -> MappedRenderObject  {
-        if let Some(data) = self.render_batchers.get_mut(&object.type_id.name.clone().to_owned()) {
-            let mapped = data.map_render_object(object);
-            return mapped;
+    pub fn add(&mut self, object:&mut RenderObject) {
+        if let Some(data) = self.render_batchers.get_mut(&Rc::as_ptr(&object.type_id)) {
+            data.map_render_object(object);
         } else {
-            let k = object.type_id.name.clone().to_owned();
-            let (data, mapped) = RenderBatcher::map_render_object_into_new(&self.gl, &object);
-            self.render_batchers.insert(k, data);
-            return mapped;
+            let data = RenderBatcher::map_render_object_into_new(&self.gl, object);
+            self.render_batchers.insert(Rc::as_ptr(&object.type_id), data);
         }
     }
 
-    fn update(&mut self, mapped:&mut MappedRenderObject, object:&RenderObject) {
-        let batcher = self.render_batchers.get_mut(&mapped.render_type.name).expect_throw("Expected batcher to exist while updating render object");
-        if Rc::ptr_eq(&mapped.render_type, &object.type_id) {
-            batcher.update( mapped, object);
+    pub fn update(&mut self, object:&mut RenderObject) {
+        
+        if let Some(allocation) = &object.allocation {
+            if Rc::ptr_eq(&allocation.render_type, &object.type_id) {
+                let batcher = self.render_batchers.get_mut(&Rc::as_ptr(&object.type_id)).expect_throw("Expected batcher to exist while updating render object");
+                batcher.update(object);
             return;
+            }
         }
 
-        *mapped = self.add(object);
+        self.add(object);
     }
 
     fn resize_canvas(&self) {
@@ -76,12 +97,12 @@ impl Renderer {
         self.canvas.set_height(display_height as u32);
     }
 
-    pub fn upload_image_from_url(&mut self, url:String) -> MappedTexture {
+    pub fn upload_image_from_url(&mut self, url:String, min_filter:TextureFilter, mag_filter:TextureFilter) -> MappedTexture {
         if let Some(rc) = self.loaded_images.get(&url).and_then(|weak| weak.upgrade()) {
             return MappedTexture { batched_texture: rc };
         }
 
-        let batched_texture = Rc::new(RefCell::new(BatchedTexture::new(&mut self.texture_batcher, &TempBlankTextureSource::new(false, 1, 1, super::texture::TextureFormat::RGBA))));
+        let batched_texture = Rc::new(RefCell::new(BatchedTexture::new(&mut self.texture_batcher, &TempBlankTextureSource::new(false, 1, 1, super::texture::TextureFormat::RGBA,min_filter,mag_filter))));
         
         let mapped_texture = MappedTexture { batched_texture:batched_texture };
         let img = HtmlImageElement::new().expect_throw("Error creating HtmlImageELement while uploading image from url");
@@ -97,7 +118,7 @@ impl Renderer {
         
         let onload_callback = Closure::wrap(Box::new(move |_| {
             log_str("Image loading");
-            mapped_clone.cached_update(&mut update_queue.borrow_mut(),Box::new( ImageTextureSource::new(img_clone.clone(), false)));
+            mapped_clone.cached_update(&mut update_queue.borrow_mut(),Box::new( ImageTextureSource::new(img_clone.clone(), false, min_filter,mag_filter)));
         }) as Box<dyn FnMut(Event)>);
 
         img.set_onerror(Some(onerr_callback.as_ref().unchecked_ref()));
@@ -118,40 +139,64 @@ impl Renderer {
         }
     }
 
+    pub fn set_clear_color(&self, color:Vector4<f32>) {
+        self.gl.clear_color(color.x, color.y, color.z, color.w)
+    }
+
     pub fn render(&mut self) {
+        self.gl.clear(WebGl2RenderingContext::COLOR_BUFFER_BIT | WebGl2RenderingContext::DEPTH_BUFFER_BIT);
         self.texture_batcher.update();
 
         self.resize_canvas();
         self.gl.viewport(0, 0, self.canvas.width() as i32, self.canvas.height() as i32);
 
+        let global_uniforms = self.calc_global_uniforms();
+
         for data in self.render_batchers.values_mut() {
-            data.render(&self.texture_batcher);
+            data.render(&self.texture_batcher,&global_uniforms);
+        }
+    }
+
+    pub fn camera_mut(&mut self) -> &mut Camera {
+        &mut self.camera
+    }
+
+    fn calc_global_uniforms(&self) -> UniformRoleMap {
+        let mut result = UniformRoleMap::new();
+        result.insert(UniformRole::Projection, UniformData::Matrix4(self.projection.calc_matrix()));
+        result.insert(UniformRole::View, UniformData::Matrix4(self.camera.calc_matrix()));
+        result
+    }
+
+    pub fn log_buffer_data(&self) {
+        for (id,batch) in self.render_batchers.iter() {
+            log_str(&format!("    id:{:?}, chunks:\n", id));
+            batch.log_buffers();
         }
     }
 }
 
+#[derive(Debug)]
 pub struct RenderBatcher {
     chunks:IndexMap<RenderChunk>,
     mapped:IndexMap<RenderChunkIndex>,
     gl:WebGl2RenderingContext,
     program:WebGlProgram,
-    remove_cache:Rc<RefCell<Vec<usize>>>,
-    blank_vertex:Vec<f32>
+    remove_cache:Rc<RefCell<Vec<usize>>>
 }
 
 impl RenderBatcher {
 
-    fn id_mapped_internal(&mut self, render_type:Rc<RenderType>, mapped:RenderChunkIndex) -> MappedRenderObject {
-        MappedRenderObject { render_type: render_type, id: self.mapped.push(mapped), remove_cache:Rc::clone(&self.remove_cache)}
+    fn id_mapped_internal(&mut self, render_type:Rc<RenderType>, mapped:RenderChunkIndex) -> RenderObjectAllocation {
+        RenderObjectAllocation { render_type: render_type, id: self.mapped.push(mapped), remove_cache:Rc::clone(&self.remove_cache)}
     }
-    fn map_render_object_into_new(gl:&WebGl2RenderingContext, object:&RenderObject) -> (RenderBatcher,MappedRenderObject) {
+    fn map_render_object_into_new(gl:&WebGl2RenderingContext, object:&mut RenderObject) -> RenderBatcher {
         let mut result = Self {
             gl:gl.clone(),
             chunks:IndexMap::new(),
             program:object.type_id.setup_program(gl),
             mapped:IndexMap::new(),
             remove_cache:Rc::new(RefCell::new(Vec::new())),
-            blank_vertex:object.type_id.get_blank_vertex()
         };
 
         let type_id = object.type_id.clone();
@@ -163,10 +208,11 @@ impl RenderBatcher {
 
         let mapped = result.id_mapped_internal(type_id, chunk_index);
 
-        (result,mapped)
+        object.allocation = Some(mapped);
+        result
     }
 
-    fn map_render_object(&mut self, object:&RenderObject) -> MappedRenderObject {
+    fn map_render_object(&mut self, object:&mut RenderObject) {
         let gl = self.gl.clone();
         self.sweep();
 
@@ -175,26 +221,29 @@ impl RenderBatcher {
         for (i, chunk) in self.chunks.iter_mut() {
             if let Some(mut mapped) = chunk.map_render_object(&gl, &object) {
                 mapped.chunk = i.clone();
-                return self.id_mapped_internal(type_id, mapped);
+                object.allocation = Some(self.id_mapped_internal(type_id, mapped));
+                return;
             }
         };
 
         let (chunk, mut mapped) = RenderChunk::map_render_object_into_new(&gl, object, &self.program);
         mapped.chunk = self.chunks.push(chunk);
 
-        return self.id_mapped_internal(type_id, mapped);
+        object.allocation = Some(self.id_mapped_internal(type_id, mapped));
     }
 
-    fn update(&mut self, mapped:&mut MappedRenderObject, object:&RenderObject) {
-        let chunk_index = &self.mapped[mapped.id];
+    fn update(&mut self, object:&mut RenderObject) {
+        //at this point it is guaranteed to be Some by the Renderer.
+        let id = object.allocation.as_ref().unwrap().id;
+        let chunk_index = &self.mapped[id];
         let gl = &self.gl.clone();
         if self.chunks[chunk_index.chunk].update(gl, &object, &chunk_index).is_ok() { return; }
 
         //it is removed before re adding so that the old space(which will be overwritten anyways) is freed.
         self.sweep();
-        self.remove(mapped.id);
+        self.remove(id);
         //it is safe to drop the old one because it is safe to call remove on the same mapped id twice.
-        *mapped = self.map_render_object(object);
+        self.map_render_object(object);
     }
 
     fn remove(&mut self, id:usize) {
@@ -203,7 +252,7 @@ impl RenderBatcher {
             Some(x) => x,
             None => return
         };
-        self.chunks[chunk_index.chunk].remove(&self.gl, &chunk_index, &self.blank_vertex)
+        self.chunks[chunk_index.chunk].remove(&self.gl, chunk_index);
 
     }
 
@@ -217,12 +266,18 @@ impl RenderBatcher {
         borrow.clear();
     }
 
-    fn render(&mut self, texture_batcher:&TextureBatcher) {
+    fn render(&mut self, texture_batcher:&TextureBatcher, global_uniforms:&UniformRoleMap) {
         self.sweep();
         let gl = &self.gl;
         gl.use_program(Some(&self.program));
-        for chunk in self.chunks.values() {
-            chunk.render(&self.gl, texture_batcher,&self.program);
+        for chunk in self.chunks.values_mut() {
+            chunk.render(&self.gl, texture_batcher,&self.program, global_uniforms);
+        }
+    }
+
+    fn log_buffers(&self) {
+        for (idx,chunk) in self.chunks.iter() {
+            chunk.gl_buffers.log_data(&self.gl, chunk.verticies_len as u32, chunk.indicies_len as u32);
         }
     }
 }
@@ -237,6 +292,22 @@ pub struct RenderChunk {
     indicies_len:usize,
     indicies_count:usize,
     verticies_count:usize
+}
+
+impl Debug for RenderChunk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RenderChunk")
+            .field("render_type", &self.render_type)
+            .field("gl_buffers", &"..")
+            .field("uniforms", &self.uniforms)
+            .field("verticies_free_areas", &self.verticies_free_areas)
+            .field("indicies_free_areas", &self.indicies_free_areas)
+            .field("verticies_len", &self.verticies_len)
+            .field("indicies_len", &self.indicies_len)
+            .field("vertics_count", &self.verticies_count)
+            .field("indicies_count", &self.indicies_count)
+        .finish()
+    }
 }
 
 
@@ -321,76 +392,118 @@ impl RenderChunk {
         return None;
     }
 
-    fn remove(&mut self, gl:&WebGl2RenderingContext, mapped:&RenderChunkIndex, blank_vertex:&Vec<f32>) {
+    fn remove(&mut self, gl:&WebGl2RenderingContext, mapped:RenderChunkIndex) {
 
-        //this very heavily relies on the free areas array being in order and valid, if there is any corruption in it this will just make everything worse.
-        let mut before = None;
-        let mut i_to_remove:Option<usize> = None;
-        let mut isolated = true;
-        let mut last_under = 0;
-        for (i,x) in self.verticies_free_areas.iter_mut().enumerate() {
-            if x.start+x.size == mapped.v_slice.start {
-                x.size += mapped.v_slice.size;
-                before = Some(x);
-                isolated = false;
-            } else if x.start == mapped.v_slice.start + mapped.v_slice.size {
-                isolated = false;
-                match &mut before  {
-                    None => { x.size += mapped.v_slice.size; },
-                    Some(before) => { 
-                        before.size += x.size;
-                        i_to_remove = Some(i);
-                    }
-                }
-            } else if isolated && x.start < mapped.v_slice.start {
-                last_under = i;
+        let mut lower: Option<usize> = None;
+
+        if let Some((idx,slice)) = self.verticies_free_areas.iter_mut().enumerate().find(|(_a,x)| x.start + x.size == mapped.v_slice.start) {
+            slice.size += mapped.v_slice.size;
+            lower = Some(idx);
+            
+        } 
+        
+        if let Some((idx,slice)) = self.verticies_free_areas.iter_mut().enumerate().find(|(_a,x)| x.start == mapped.v_slice.start + mapped.v_slice.size) {
+            if let Some(lower) = lower {
+                self.verticies_free_areas[lower].size += slice.size;
+                self.verticies_free_areas.remove(idx);
+            } else {
+                slice.start -= mapped.v_slice.size;
             }
+        } else if lower.is_none() {
+            self.verticies_free_areas.push(mapped.v_slice.clone());
         }
 
-        if let Some(i) = i_to_remove { self.verticies_free_areas.remove(i); }
+        let mut lower: Option<usize> = None;
 
-        if isolated {
-            self.verticies_free_areas.insert(last_under, mapped.v_slice.clone());
-        }
-
-        //indicies
-        let mut before = None;
-        let mut i_to_remove:Option<usize> = None;
-        let mut isolated = true;
-        let mut last_under = 0;
-        for (i,x) in self.indicies_free_areas.iter_mut().enumerate() {
-            if x.start+x.size == mapped.i_slice.start {
-                x.size += mapped.i_slice.size;
-                before = Some(x);
-                isolated = false;
-            } else if x.start == mapped.i_slice.start + mapped.i_slice.size {
-                isolated = false;
-                match &mut before  {
-                    None => { x.size += mapped.i_slice.size; },
-                    Some(before) => { 
-                        before.size += x.size;
-                        i_to_remove = Some(i);
-                    }
-                }
-            } else if isolated && x.start < mapped.i_slice.start {
-                last_under = i;
+        if let Some((idx,slice)) = self.indicies_free_areas.iter_mut().enumerate().find(|(_a,x)| x.start + x.size == mapped.i_slice.start) {
+            slice.size += mapped.i_slice.size;
+            lower = Some(idx);
+            
+        } 
+        
+        if let Some((idx,slice)) = self.indicies_free_areas.iter_mut().enumerate().find(|(_a,x)| x.start == mapped.i_slice.start + mapped.i_slice.size) {
+            if let Some(lower) = lower {
+                self.indicies_free_areas[lower].size += slice.size;
+                self.indicies_free_areas.remove(idx);
+            } else {
+                slice.start -= mapped.i_slice.size;
             }
+        } else if lower.is_none() {
+            self.indicies_free_areas.push(mapped.i_slice.clone());
         }
 
-        if let Some(i) = i_to_remove { self.indicies_free_areas.remove(i); }
+        // //this very heavily relies on the free areas array being in order and valid, if there is any corruption in it this will just make everything worse.
+        // let mut before = None;
+        // let mut i_to_remove:Option<usize> = None;   
+        // let mut isolated = true;
+        // let mut last_under = 0;
+        // for (i,x) in self.verticies_free_areas.iter_mut().enumerate() {
+        //     if x.start+x.size == mapped.v_slice.start {
+        //         x.size += mapped.v_slice.size;
+        //         before = Some(x);
+        //         isolated = false;
+        //     } else if x.start == mapped.v_slice.start + mapped.v_slice.size {
+        //         isolated = false;
+        //         match &mut before  {
+        //             None => { x.size += mapped.v_slice.size; },
+        //             Some(before) => { 
+        //                 before.size += x.size;
+        //                 i_to_remove = Some(i);
+        //             }
+        //         }
+        //     } else if isolated && x.start < mapped.v_slice.start {
+        //         last_under = i;
+        //     }
+        // }
 
-        if isolated {
-            self.indicies_free_areas.insert(last_under, mapped.i_slice.clone());
-        }
+        // if let Some(i) = i_to_remove { self.verticies_free_areas.remove(i); }
+
+        // if isolated {
+        //     self.verticies_free_areas.insert(last_under, mapped.v_slice.clone());
+        // }
+
+        // //indicies
+        // let mut before = None;
+        // let mut i_to_remove:Option<usize> = None;
+        // let mut isolated = true;
+        // let mut last_under = 0;
+        // for (i,x) in self.indicies_free_areas.iter_mut().enumerate() {
+        //     if x.start+x.size == mapped.i_slice.start {
+        //         x.size += mapped.i_slice.size;
+        //         before = Some(x);
+        //         isolated = false;
+        //     } else if x.start == mapped.i_slice.start + mapped.i_slice.size {
+        //         isolated = false;
+        //         match &mut before  {
+        //             None => { x.size += mapped.i_slice.size; },
+        //             Some(before) => { 
+        //                 before.size += x.size;
+        //                 i_to_remove = Some(i);
+        //             }
+        //         }
+        //     } else if isolated && x.start < mapped.i_slice.start {
+        //         last_under = i;
+        //     }
+        // }
+
+        // if let Some(i) = i_to_remove { self.indicies_free_areas.remove(i); }
+
+        // if isolated {
+        //     self.indicies_free_areas.insert(last_under, mapped.i_slice.clone());
+        // }
 
         let mut vec = Vec::new();
         let mut i = 0;
-        let l = blank_vertex.len()-1;
-        vec.resize_with(mapped.v_slice.size, || { i+=1; blank_vertex[(i-1) % l] });
+        let blank_vertex = self.render_type.get_blank_vertex();
+
+        if let Some(blank_vertex) = blank_vertex {
+            let l = blank_vertex.len()-1;
+            vec.resize_with(mapped.v_slice.size, || { i+=1; blank_vertex[(i-1) % l] });
+        }
 
         let mut indicies = Vec::new();
         indicies.resize(mapped.i_slice.size, 0u16);
-        self.gl_buffers.buffer_sub_data(gl, &vec, mapped.v_slice.start, &indicies, mapped.i_slice.start);   
+        self.gl_buffers.buffer_sub_data(gl, &vec, mapped.v_slice.start, &indicies, mapped.i_slice.start * mem::size_of::<u16>());   
     }
 
     fn update(&mut self, gl:&WebGl2RenderingContext, object:&RenderObject, mapped_chunk_index:&RenderChunkIndex) -> Result<(),()> {
@@ -420,15 +533,21 @@ impl RenderChunk {
                 *x += offset;
             }
 
-            self.gl_buffers.buffer_sub_data(gl, verticies, v_slice.start * mem::size_of::<f32>(), &indicies, i_slice.start * mem::size_of::<u16>());
+            if verticies_len + v_slice.start > self.verticies_len || indicies_len + i_slice.start > self.indicies_len {
+                log_str(&format!("BUFFER OVERFLOW: {:#?}",self));
+            }
+
+            assert!(!(verticies_len + v_slice.start > self.verticies_len || indicies_len + i_slice.start > self.indicies_len));
+
+            self.gl_buffers.buffer_sub_data(gl, verticies, v_slice.start, &indicies, i_slice.start * mem::size_of::<u16>());
         }
     }
 
-    fn render(&self, gl:&WebGl2RenderingContext, texture_batcher:&TextureBatcher, program:&WebGlProgram) {
-        self.uniforms.setup_uniforms_and_textures(gl, texture_batcher, program);
+    fn render(&mut self, gl:&WebGl2RenderingContext, texture_batcher:&TextureBatcher, program:&WebGlProgram, global_uniforms:&UniformRoleMap) {
+        self.uniforms.setup_uniforms_and_textures(gl, texture_batcher, program, &global_uniforms);
         let (l,iter) = match self.gl_buffers.is_instanced() {
-            true => (self.indicies_len,self.indicies_free_areas.iter()),
-            false => (self.verticies_len,self.verticies_free_areas.iter())
+            false => (self.indicies_len,self.indicies_free_areas.iter()),
+            true => (self.verticies_len,self.verticies_free_areas.iter())
         };
         let count = {
             let mut count = 0;
@@ -447,37 +566,26 @@ impl RenderChunk {
     }
 }
 
-pub struct MappedRenderObject { 
+pub struct RenderObjectAllocation { 
     render_type:Rc<RenderType>, 
     id:usize,
     remove_cache:Rc<RefCell<Vec<usize>>>
 }
 
-impl MappedRenderObject {
-    pub fn new(renderer:&mut Renderer, render_object:RenderObject) -> Self {
-        renderer.add(&render_object)
-    }
-
-    pub fn update(&mut self, renderer:&mut Renderer, render_object:&RenderObject) {
-        renderer.update(self, render_object);
-    }
-}
-
-impl Debug for MappedRenderObject {
+impl Debug for RenderObjectAllocation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MappedRenderObject")
             .field("id", &self.id).finish()
     }
 }
 
-impl Drop for MappedRenderObject {
+impl Drop for RenderObjectAllocation {
     fn drop(&mut self) {
-        log_str(&format!("dropping: {:?}", self.id));
         self.remove_cache.borrow_mut().push(self.id)
     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct MappedTexture {
     batched_texture:Rc<RefCell<BatchedTexture>>,
 }
@@ -517,73 +625,140 @@ struct SlicePointer {
     size:usize
 }
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 #[allow(unused)]
-pub enum UnifromType {
-    Texture(MappedTexture),
+pub enum UniformData {
+    Texture(Option<MappedTexture>),
     Float(f32),
+    Matrix4(Matrix4<f32>),
+    Global
 }
 
-#[derive(PartialEq, Clone)]
-pub struct Uniform {
-    name:String,
-    data:UnifromType,
-}
-
-impl Uniform {
-    pub fn new(name:&str, data:UnifromType) -> Self {
-        Self { name: String::from(name), data: data }
-    }
+impl UniformData {
     fn batchable_with(&self, other:&Self) -> bool {
-        self.name == other.name && match (&self.data,&other.data) {
-            (UnifromType::Texture(tex1),UnifromType::Texture(tex2)) => tex1.batched_texture.borrow().same_instance(&tex2.batched_texture.borrow()),
+        match (&self,&other) {
+            (UniformData::Texture(Some(tex1)),UniformData::Texture(Some(tex2))) => tex1.batched_texture.borrow().same_instance(&tex2.batched_texture.borrow()),
             (x,y) => x==y
         }
     }
 }
 
-#[derive(Clone)]
-pub struct UniformBlock {
-    uniforms:Vec<Uniform>,
-    cached_uniform_locations:RefCell<Vec<WebGlUniformLocation>>
+type UniformRoleMap = HashMap<UniformRole,UniformData>;
+
+#[derive(Clone, Debug)]
+ pub struct UniformBlock {
+    uniforms:HashMap<UniformAttrib, UniformData>, 
+    cached_uniform_locations:HashMap<UniformAttrib, Option<WebGlUniformLocation>>
 }
 
 impl Default for UniformBlock {
     fn default() -> Self {
-        Self { uniforms: Vec::new(), cached_uniform_locations: RefCell::new(Vec::new()) }
+        Self { uniforms: HashMap::new(), cached_uniform_locations: HashMap::new() }
     }
 }
 
 impl UniformBlock {
-    pub fn new(uniforms:Vec<Uniform>) -> Self {
-        Self { uniforms: uniforms, cached_uniform_locations: RefCell::new(Vec::new()) }
+  
+    pub fn set(&mut self, render_type:&Rc<RenderType>, name:&str, value:UniformData) {
+        let attrib = match render_type.uniform_attribs.iter().find_map(|x| 
+            if x.name == name {
+                Some(x)
+            } else {
+                None
+            }
+        ) {
+            Some(attrib) => attrib,
+            None => {
+                warn!(format!("Failed to set uniform {}", name));
+                return;
+            }
+        };
+        self.uniforms.insert(attrib.clone(), value);
+        self.cached_uniform_locations.insert(attrib.clone(), None);
     }
 
     fn batchable_with(&self, other:&Self) -> bool {
-        self.uniforms.iter().zip(other.uniforms.iter()).find(|(a,b)| !a.batchable_with(b)).is_none()
-    }
-
-    fn get_uniform_locations(&self,gl:&WebGl2RenderingContext, program:&WebGlProgram) {
-        *self.cached_uniform_locations.borrow_mut() = Vec::new();
-        for uniform in self.uniforms.iter() {
-            self.cached_uniform_locations.borrow_mut().push(gl.get_uniform_location(program, &uniform.name).expect_throw("Get unifrom location failed"));
-        }
-    }
-
-    fn setup_uniforms_and_textures(&self, gl:&WebGl2RenderingContext, texture_batcher:&TextureBatcher, program:&WebGlProgram) {
-        let mut texture_count = 0;
-        if self.cached_uniform_locations.borrow().is_empty() { self.get_uniform_locations(gl, program); }
-        for (uniform,location) in self.uniforms.iter().zip(self.cached_uniform_locations.borrow().iter()) {
-            match &uniform.data {
-                UnifromType::Float(x) => { gl.uniform1f(Some(&location), *x); },
-                UnifromType::Texture(mapped) => {
-                    let active = WebGl2RenderingContext::TEXTURE0 + texture_count;
-                    gl.active_texture(active);
-                    mapped.bind(texture_batcher);
-                    gl.uniform1i(Some(&location), texture_count as i32);
-                    texture_count += 1;
-                }
+        for (name, data) in self.uniforms.iter() {
+            if let Some(x) = other.uniforms.get(name) {
+                if !data.batchable_with(x) { return false; }
+                continue;
+            } else {
+                return false;
             }
         }
+        return true;
+    }
+
+    fn setup_uniforms_and_textures (
+        &mut self, 
+        gl:&WebGl2RenderingContext, 
+        texture_batcher:&TextureBatcher,
+        program:&WebGlProgram,
+        role_map:&UniformRoleMap
+    ) {
+
+        let mut texture_count = 0;
+        for (attrib,data) in self.uniforms.iter() {
+            let data = match &attrib.role {
+                UniformRole::Custom => {
+                    &data
+                },
+                x => {
+                    role_map.get(x).unwrap()
+                }
+            };
+            let location = self.cached_uniform_locations.get_mut(&attrib).unwrap().get_or_insert_with(|| {
+                gl.get_uniform_location(program, &attrib.name).unwrap()
+            });
+
+            apply_uniform_data(&data, gl, texture_batcher, location, &mut texture_count);
+        }
+    }
+}
+
+pub enum VertexData {
+    Float(f32),
+    FloatVec2(Vector2<f32>),
+    FloatVec3(Vector3<f32>),
+    FloatVec4(Vector4<f32>),
+}
+
+impl VertexData {
+    pub fn into_bytes(self) -> Vec<u8> {
+        match self {  
+            Self::Float(x) => x.to_ne_bytes().to_vec(),
+            Self::FloatVec2(v) => slice_to_vec(AsRef::<[f32; 2]>::as_ref(&v)),
+            Self::FloatVec3(v) => slice_to_vec(AsRef::<[f32; 3]>::as_ref(&v)),
+            Self::FloatVec4(v) => slice_to_vec(AsRef::<[f32; 4]>::as_ref(&v)),
+        }
+    }
+}
+
+fn slice_to_vec(slice:&[f32]) -> Vec<u8> {
+    slice.iter().flat_map(|x| x.to_ne_bytes().to_vec()).collect()
+}
+
+fn apply_uniform_data(
+    data:&UniformData,
+    gl:&WebGl2RenderingContext,
+    texture_batcher:&TextureBatcher,
+    location:&WebGlUniformLocation,
+    texture_count:&mut i32,
+) {
+    match data {
+        UniformData::Float(x) => { gl.uniform1f(Some(&location), *x); },
+        UniformData::Texture(Some(mapped)) => {
+            let active = WebGl2RenderingContext::TEXTURE0 + *texture_count as u32;
+            gl.active_texture(active);
+            mapped.bind(texture_batcher);
+            gl.uniform1i(Some(&location), *texture_count);
+            *texture_count += 1;
+        },
+        UniformData::Texture(None) => {},
+        UniformData::Matrix4(mat) => {
+            let data:&[f32; 16] = mat.as_ref();
+            gl.uniform_matrix4fv_with_f32_array(Some(&location), false, data);
+        },
+        UniformData::Global => { panic!("Tried to apply a UniformData which was labeled Global, this should be converted to the correct UniformData before being applied.") }
     }
 }

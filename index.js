@@ -1,5 +1,12 @@
+import("./js.js")
+
 const organizer = import("./pkg/organizer");
 
 organizer.then(code=>{
-    code.texture_update_test();
+    let f = code.lucas_game();
+    function x() {
+        requestAnimationFrame(x)
+        f()
+    }
+    requestAnimationFrame(x)
 }).catch(console.error);

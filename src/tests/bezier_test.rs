@@ -1,6 +1,6 @@
 use crate::{log_str, engine::render::types::{quadratic_bezier::QuadraticBezier, triangle::Triangle}};
 
-use nalgebra::Vector2;
+use cgmath::{Vector2, Vector4};
 
 extern crate wasm_bindgen;
 use std::{ rc::Rc, cell::RefCell};
@@ -22,11 +22,11 @@ pub fn bezier_test() {
 
     let mut triangle = Triangle::new(&mut renderer, [
         Vector2::new(0.0, 0.0),Vector2::new(0.5, 0.0),Vector2::new(0.5, 0.5)
-    ], [0.0,0.0,1.0,1.0]);
+    ], Vector4::new(0.0,0.0,1.0,1.0));
 
     let mut curve = QuadraticBezier::new(&mut renderer,[
         Vector2::new(0.0, 0.0),Vector2::new(0.5, 0.),Vector2::new(0.5, 0.5)
-    ],[1.0,0.0,0.0,1.0],0.01,0.01);
+    ],Vector4::new(1.0,0.0,0.0,1.0),0.01,0.01);
 
     // Here we want to call `requestAnimationFrame` in a loop, but only a fixed
     // number of times. After it's done we want all our resources cleaned up. To
@@ -43,9 +43,10 @@ pub fn bezier_test() {
     // for all future iterations of the loop
     let f = Rc::new(RefCell::new(None));
     let g = f.clone();
+    
+    log_str(&format!("Renderer: {:?}",renderer));
 
     *g.borrow_mut() = Some(Closure::new(move || {
-
         // Set the body's text content to how many times this
         // requestAnimationFrame callback has fired.
         curve.render();

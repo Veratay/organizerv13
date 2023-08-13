@@ -1,4 +1,4 @@
-use std::{collections::HashMap, cell::RefCell, rc::Rc};
+use std::{collections::HashMap, cell::RefCell, rc::Rc, fmt::Debug};
 
 use guillotiere::{AtlasAllocator, size2, Allocation};
 use wasm_bindgen::UnwrapThrowExt;
@@ -6,7 +6,7 @@ use web_sys::{WebGlTexture, WebGl2RenderingContext, HtmlImageElement};
 
 //TODO- make it so that the number of instances cannot grow larger than the max provided, by merging them.
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Debug, Clone, Copy)]
 #[allow(unused)]
 pub enum TextureFormat {
     RGB,
@@ -41,6 +41,21 @@ pub enum TextureFormat {
     // RGBA8UI
 } 
 
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub enum TextureFilter {
+    Linear,
+    Nearest
+}
+
+impl TextureFilter {
+    fn to_wgl(&self) -> i32  {
+        match self {
+            Self::Linear => WebGl2RenderingContext::LINEAR as i32,
+            Self::Nearest => WebGl2RenderingContext::NEAREST as i32
+        }
+    }
+}
+
 impl TextureFormat {
 
     fn get_internal_format(&self) -> i32 {
@@ -69,6 +84,8 @@ pub trait BatchableTextureSource {
     fn width(&self) -> i32;
     fn height(&self) -> i32;
     fn format(&self) -> TextureFormat;
+    fn min_filter(&self) -> TextureFilter;
+    fn mag_filter(&self) -> TextureFilter;
     fn unique_texture(&self) -> bool;
     fn valid(&self) -> bool {true}
 }
@@ -77,6 +94,8 @@ pub trait BatchableTextureSource {
 pub struct RawTextureSource<'a> {
     pub data:&'a [u8],
     pub format:TextureFormat,
+    pub min_filter:TextureFilter,
+    pub mag_filter:TextureFilter,
     pub width:i32,
     pub height:i32,
     pub unique:bool
@@ -86,8 +105,9 @@ impl<'a> BatchableTextureSource for RawTextureSource<'a> {
     fn height(&self) -> i32 { self.height }
     fn width(&self) -> i32 { self.width }
     fn format(&self) -> TextureFormat { self.format }
+    fn min_filter(&self) -> TextureFilter { self.min_filter }
+    fn mag_filter(&self) -> TextureFilter { self.mag_filter }
     fn unique_texture(&self) -> bool { self.unique }
-        
     fn tex_sub_image_2d(&self, gl:&WebGl2RenderingContext, x:i32, y:i32) {
         unsafe {
             let buffer_view = js_sys::Uint8Array::view(&self.data);
@@ -110,12 +130,14 @@ pub struct TempBlankTextureSource {
     unique:bool,
     width:i32,
     height:i32,
-    format:TextureFormat
+    format:TextureFormat,
+    min_filter:TextureFilter,
+    mag_filter:TextureFilter
 }
 
 impl TempBlankTextureSource {
-    pub fn new(unique:bool, width:i32, height:i32, format:TextureFormat) -> Self {
-        Self { unique: unique, width: width, height: height, format: format }
+    pub fn new(unique:bool, width:i32, height:i32, format:TextureFormat, min_filter:TextureFilter, mag_filter:TextureFilter) -> Self {
+        Self { unique: unique, width: width, height: height, format: format, min_filter:min_filter, mag_filter:mag_filter }
     }
 }
 
@@ -123,6 +145,8 @@ impl BatchableTextureSource for TempBlankTextureSource {
     fn format(&self) -> TextureFormat {
         self.format
     }
+    fn min_filter(&self) -> TextureFilter { self.min_filter }
+    fn mag_filter(&self) -> TextureFilter { self.mag_filter }
     fn height(&self) -> i32 {
         self.height
     }
@@ -140,12 +164,14 @@ impl BatchableTextureSource for TempBlankTextureSource {
 
 pub struct ImageTextureSource {
     image:HtmlImageElement,
-    unique:bool
+    unique:bool,
+    min_filter:TextureFilter,
+    mag_filter:TextureFilter
 }
 
 impl ImageTextureSource {
-    pub fn new(image:HtmlImageElement, unique:bool) -> Self {
-        Self { image: image, unique: unique }
+    pub fn new(image:HtmlImageElement, unique:bool, min_filter:TextureFilter, mag_filter:TextureFilter) -> Self {
+        Self { image: image, unique: unique, min_filter:min_filter, mag_filter:mag_filter }
     }
 }
 
@@ -157,6 +183,8 @@ impl BatchableTextureSource for ImageTextureSource {
     fn width(&self) -> i32 {
         self.image.width() as i32
     }
+    fn min_filter(&self) -> TextureFilter { self.min_filter }
+    fn mag_filter(&self) -> TextureFilter { self.mag_filter }
     fn tex_sub_image_2d(&self, gl:&WebGl2RenderingContext, x:i32, y:i32) {
         gl.tex_sub_image_2d_with_i32_and_i32_and_u32_and_type_and_html_image_element(
             WebGl2RenderingContext::TEXTURE_2D, 
@@ -183,7 +211,20 @@ pub struct BatchedTexture {
     updating:bool
 }
 
-pub struct FutureRemovedBatchedTexture {
+impl Debug for BatchedTexture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BatchedTexture")
+        .field("remove_cache", &"..")
+        .field("texture_id", &self.texture_id)
+        .field("allocation", &self.allocation)
+        .field("loaded", &self.loaded)
+        .field("updating", &self.updating)
+        .finish()
+    }
+}
+
+#[derive(Debug)]
+struct FutureRemovedBatchedTexture {
     texture_id:u32,
     allocation:Allocation
 }
@@ -227,8 +268,18 @@ impl BatchedTexture {
     }
 }
 
+
 pub struct UpdateCache {
     inner:Vec<(Rc<RefCell<BatchedTexture>>,Box<dyn BatchableTextureSource>)>
+}
+
+impl Debug for UpdateCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let inner:Vec<_> = self.inner.iter().map(|x| &x.0).collect();
+        f.debug_struct("UpdateCache")
+        .field("inner", &inner)
+        .finish()
+    }
 }
 
 impl UpdateCache {
@@ -248,6 +299,7 @@ impl UpdateCache {
     }
 }
 
+#[derive(Debug)]
 pub struct RemoveCache {
     inner:Vec<FutureRemovedBatchedTexture>
 }
@@ -269,6 +321,7 @@ impl RemoveCache {
     }
 }
 
+#[derive(Debug)]
 pub struct TextureBatcher {
     instances:HashMap<u32,TextureBatcherInstance>,
     texture_remove_cache:Rc<RefCell<RemoveCache>>, //needs to be owned by every batched texture to allow adding to queue on drop
@@ -294,6 +347,10 @@ impl TextureBatcher {
 
     pub fn get_update_cache(&self) -> Rc<RefCell<UpdateCache>> {
         self.update_cache.clone()
+    }
+
+    pub fn get_remove_cache(&self) -> Rc<RefCell<RemoveCache>> {
+        self.texture_remove_cache.clone()
     }
 
     pub fn cleanup(&mut self) {
@@ -326,6 +383,8 @@ impl TextureBatcher {
         let mut new_instance = TextureBatcherInstance::new(
             &gl, 
             src.format(), 
+            src.min_filter(),
+            src.mag_filter(),
             if unique { src.width() } else { i32::max(self.min_width, src.width()) },
             if unique { src.height() } else { i32::max(self.min_height, src.height()) }
         );
@@ -383,8 +442,20 @@ struct TextureBatcherInstance {
     format:TextureFormat,
 }
 
+impl Debug for TextureBatcherInstance {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextureBatcherInstance")
+        .field("atlas", &"..")
+        .field("texture", &self.texture)
+        .field("width", &self.width)
+        .field("height", &self.height)
+        .field("format", &self.format)
+        .finish()
+    }
+}
+
 impl TextureBatcherInstance { 
-    fn new(gl:&WebGl2RenderingContext,format:TextureFormat,width:i32,height:i32) -> Self {
+    fn new(gl:&WebGl2RenderingContext,format:TextureFormat, min_filter:TextureFilter, mag_filter:TextureFilter, width:i32,height:i32) -> Self {
         let texture = gl.create_texture().expect_throw("Render Error: Unable to create instance of texture batcher");
         gl.bind_texture(WebGl2RenderingContext::TEXTURE_2D, Some(&texture));
         gl.tex_image_2d_with_i32_and_i32_and_i32_and_format_and_type_and_opt_u8_array(
@@ -398,7 +469,8 @@ impl TextureBatcherInstance {
             format.get_type(), 
             None
         ).expect_throw("Error uploading initial data to TextureBatcher GlTexture");
-        gl.tex_parameteri(WebGl2RenderingContext::TEXTURE_2D, WebGl2RenderingContext::TEXTURE_MIN_FILTER, WebGl2RenderingContext::LINEAR as i32);
+        gl.tex_parameteri(WebGl2RenderingContext::TEXTURE_2D, WebGl2RenderingContext::TEXTURE_MIN_FILTER, min_filter.to_wgl());
+        gl.tex_parameteri(WebGl2RenderingContext::TEXTURE_2D, WebGl2RenderingContext::TEXTURE_MAG_FILTER, mag_filter.to_wgl());
         gl.tex_parameteri(WebGl2RenderingContext::TEXTURE_2D, WebGl2RenderingContext::TEXTURE_WRAP_S, WebGl2RenderingContext::CLAMP_TO_EDGE as i32);
         gl.tex_parameteri(WebGl2RenderingContext::TEXTURE_2D, WebGl2RenderingContext::TEXTURE_WRAP_T, WebGl2RenderingContext::CLAMP_TO_EDGE as i32);
 

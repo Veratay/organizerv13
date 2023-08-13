@@ -1,14 +1,12 @@
 use std::rc::Rc;
 
-use nalgebra::Vector2;
+use cgmath::{Vector2, Vector4};
 
-use crate::{engine::render::{render_object::{RenderType, VertexAttrib, ShaderDataTypes, RenderObject, AttributeRole}, renderer::{Renderer, MappedRenderObject, UniformBlock}}, log_str};
+use crate::engine::render::{render_object::{RenderType, VertexAttrib, ShaderDataTypes, RenderObject, AttributeRole}, renderer::{Renderer, RenderObjectAllocation, VertexData}};
 
 thread_local! {
-    static TRIANGLE_RENDER_TYPE: Rc<RenderType> = Rc::new(RenderType {
-        name:String::from("Triangle"),
-        instanced:None,
-        vertex_shader:String::from(
+    static TRIANGLE_RENDER_TYPE:Rc<RenderType> = Rc::new(RenderType::new_batched_growable(
+        String::from(
             "#version 300 es
             
             in vec2 pos;
@@ -20,8 +18,7 @@ thread_local! {
                 gl_Position = vec4(pos,0.0,1.0);
                 color = vColor;
             }"
-        ),
-        fragment_shader:String::from(
+        ), String::from(
             "# version 300 es
             precision highp float;
             in vec4 color;
@@ -29,8 +26,8 @@ thread_local! {
             void main() {
                 FragColor = color;
             }"
-        ),
-        vertex_attribs:vec![
+        ), 
+        vec![
             VertexAttrib { 
                 name: String::from("pos"), 
                 role:AttributeRole::Custom,
@@ -42,45 +39,40 @@ thread_local! {
                 data_type:ShaderDataTypes::FloatVec4,
             },
             
-        ],
-        instance_attribs:Vec::new(),
-        uniform_attribs:Vec::new(),
-        blank_vertex:vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        vertex_size:6,
-        verticies_chunk_min_size:20,
-        verticies_chunk_grow_factor:1.1,
-        verticies_chunk_max_size:2000,
-        indicies_chunk_min_size:1000,
-        indicies_chunk_grow_factor:1.1, 
-        indicies_chunk_max_size:2000,
-    })
+        ], 
+        Vec::new(), 
+        Vec::new(), 
+        20, 
+        40, 
+        20, 
+        40, 
+        2.0, 
+        2.0
+    ));
 }
 
 pub struct Triangle {
-    obj:MappedRenderObject,
+    obj:RenderObject,
 }
 
 impl Triangle {
-    pub fn new(renderer:&mut Renderer, points:[Vector2<f32>; 3], color:[f32; 4]) -> Self {
+    pub fn new(renderer:&mut Renderer, points:[Vector2<f32>; 3], color:Vector4<f32>) -> Self {
 
-        let verticies = vec![
-            points[0].x,points[0].y, color[0],color[1],color[2],color[3],
-            points[1].x,points[1].y, color[0],color[1],color[2],color[3],
-            points[2].x,points[2].y, color[0],color[1],color[2],color[3]
-        ];
+        let mut render_object = RenderObject::new(TRIANGLE_RENDER_TYPE.with(|f| f.clone()));
+        render_object.add_triangle([0,1,2]);
+        render_object.set_v_datas(0, "pos", vec![
+            VertexData::FloatVec2(points[0]),
+            VertexData::FloatVec2(points[1]),
+            VertexData::FloatVec2(points[2])
+        ]);
+        render_object.set_v_datas(0, "vColor", vec![
+            VertexData::FloatVec4(color),
+            VertexData::FloatVec4(color),
+            VertexData::FloatVec4(color)
+        ]);
 
-        let indicies = vec![0,1,2];
-
-        let render_object = RenderObject {
-            type_id:TRIANGLE_RENDER_TYPE.with(|f| f.clone()),
-            uniforms:UniformBlock::default(),
-            verticies:verticies,
-            indicies:indicies
-        };
-
-        let obj = MappedRenderObject::new(renderer, render_object);
-        log_str(&format!("triangle id is: {:?}",obj));
-        Self { obj:obj }
+        render_object.update(renderer);
+        Self { obj:render_object }
     }
 
     pub fn render(&mut self) {

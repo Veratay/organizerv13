@@ -1,37 +1,91 @@
-use std::{rc::Rc, mem};
+use std::{rc::Rc, mem, collections::HashMap, fmt::Debug};
 
-use js_sys::{Uint16Array, ArrayBuffer, Float32Array};
+use js_sys::{Uint16Array, ArrayBuffer, Float32Array, Uint8Array};
 use wasm_bindgen::UnwrapThrowExt;
 use web_sys::{WebGl2RenderingContext, WebGlBuffer, WebGlVertexArrayObject, WebGlProgram};
 
-use crate::{log_str, log_f32_arr, log_u16_arr};
+use crate::{log_str, log_f32_arr, log_u16_arr, log_u8_arr, log_u8_as_f32_arr};
 
-use super::{program::create_program_from_src, renderer::UniformBlock};
+use super::{program::create_program_from_src, renderer::{UniformBlock, UniformData, VertexData, RenderObjectAllocation, Renderer}};
 
-#[derive(Clone)]
 pub struct RenderObject {
-    pub type_id:Rc<RenderType>,
-    pub uniforms:UniformBlock,
-    pub verticies:Vec<f32>,
-    pub indicies:Vec<u16>
+    pub(super) type_id:Rc<RenderType>,
+    pub(super) uniforms:UniformBlock,
+    pub(super) verticies:Vec<u8>,
+    pub(super) indicies:Vec<u16>,
+    pub(super) allocation:Option<RenderObjectAllocation>
 }
 
+impl Debug for RenderObject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RenderObject")
+        .field("uniforms", &self.uniforms)
+        .field("verticies", &self.verticies)
+        .field("indicies", &self.indicies)
+        .field("allocation", &self.allocation)
+        .finish()
+    }
+}
+
+impl RenderObject {
+    pub fn new(render_type:Rc<RenderType>) -> Self {
+        Self { type_id: render_type, uniforms: UniformBlock::default(), verticies: Vec::new(), indicies: Vec::new(), allocation:None }
+    }
+
+    pub fn set_uniform(&mut self, name:&str, value:UniformData) {
+        self.uniforms.set(&self.type_id, name, value);
+    }
+
+    #[inline]
+    pub fn add_triangle(&mut self, indicies:[u16; 3]) {
+        self.indicies.extend_from_slice(&indicies);
+    }
+    
+    #[inline]
+    pub fn set_v_data(&mut self, idx:u16, name:&str, value:VertexData) {
+        let offset = self.type_id.calc_v_attrib_offset(name, idx).expect_throw(&format!("Could not find vertex attribute with the name {}",name));
+        let bytes = value.into_bytes();
+        let end = offset + bytes.len();
+        if end >= self.verticies.len() { self.verticies.resize(end, 0); }
+        self.verticies.splice(offset..end, bytes).for_each(|_| {});
+    }
+
+    pub fn set_v_datas(&mut self, idx:u16, name:&str, values:Vec<VertexData>) {
+        for (x,data) in values.into_iter().enumerate() {
+            self.set_v_data(idx + x as u16, name, data)
+        }
+    }
+
+    pub fn sub_data(&mut self, idx:u16, data:Vec<u8>) {
+        let offset = self.type_id.vertex_size * idx as usize;
+        let end = offset + data.len();
+        if end >= self.verticies.len() { self.verticies.resize(end+1, 0); }
+        self.verticies.splice(offset..end, data).for_each(|_| {});
+    }
+
+    pub fn update(&mut self, renderer:&mut Renderer) {
+        renderer.update(self);
+    }
+}
+
+#[derive(Debug)]
 pub struct InstancedData {
-    pub verticies:Vec<f32>,
+    pub verticies:Vec<u8>,
     pub indicies:Vec<u16>
 }
 
 //TODO: make shader registry
+#[derive(Debug)]
 pub struct RenderType {
-    pub name:String,
     pub vertex_shader:String,
     pub fragment_shader:String,
     pub instanced:Option<InstancedData>,
-    pub blank_vertex:Vec<f32>,
+    pub blank_vertex:Option<Vec<u8>>,
     pub vertex_attribs:Vec<VertexAttrib>,
     pub instance_attribs:Vec<VertexAttrib>,
     pub uniform_attribs:Vec<UniformAttrib>,
     pub vertex_size:usize,
+    pub vertex_attrib_offsets:HashMap<String, usize>,
     pub verticies_chunk_min_size:usize,
     pub verticies_chunk_grow_factor:f32,
     pub verticies_chunk_max_size:usize,
@@ -40,18 +94,92 @@ pub struct RenderType {
     pub indicies_chunk_max_size:usize,
 }
 
-impl PartialEq<RenderType> for RenderType {
-    fn eq(&self, other: &RenderType) -> bool {
-        self.name == other.name
-    }
-}
-
+//Functions used by renderer
 impl RenderType {
-    pub fn setup_program(&self, gl:&WebGl2RenderingContext) -> WebGlProgram {
+    //TODO: update constructors to auto generate vertex attribs from shaders()
+    pub fn new_unique(
+        vertex_shader:String,
+        fragment_shader:String,
+        vertex_attribs:Vec<VertexAttrib>,
+        uniform_attribs:Vec<UniformAttrib>
+    ) -> Self {
+        Self::new_batched_fixed(
+            vertex_shader, 
+            fragment_shader, 
+            vertex_attribs, 
+            uniform_attribs, 
+            Vec::new(), 
+            0, 
+            0
+        )
+    }
+
+    pub fn new_batched_fixed(
+        vertex_shader:String,
+        fragment_shader:String,
+        vertex_attribs:Vec<VertexAttrib>,
+        uniform_attribs:Vec<UniformAttrib>,
+        blank_vertex:Vec<u8>,
+        verticies_chunk_min_size:usize,
+        indicies_chunk_min_size:usize,
+    ) -> Self {
+        Self::new_batched_growable(
+            vertex_shader, 
+            fragment_shader, 
+            vertex_attribs, 
+            uniform_attribs, 
+            blank_vertex, 
+            verticies_chunk_min_size, 
+            0, 
+            indicies_chunk_min_size, 
+            0, 
+            1.0, 
+            1.0
+        )
+    }
+
+    pub fn new_batched_growable(
+        vertex_shader:String,
+        fragment_shader:String,
+        vertex_attribs:Vec<VertexAttrib>,
+        uniform_attribs:Vec<UniformAttrib>,
+        blank_vertex:Vec<u8>,
+        verticies_chunk_min_size:usize,
+        verticies_chunk_max_size:usize,
+        indicies_chunk_min_size:usize,
+        indicies_chunk_max_size:usize,
+        verticies_grow_factor:f32,
+        indicies_grow_factor:f32
+    ) -> Self {
+        let (offsets,vertex_size) = vertex_attribs.iter().fold((HashMap::new(),0), |(mut acc,last), x| {
+            acc.insert(x.name.clone(), last);
+            let new =x.data_type.get_size() as usize + last;
+            (acc,new)
+        });
+        Self {
+            vertex_shader:vertex_shader,
+            fragment_shader:fragment_shader,
+            instanced:None,
+            blank_vertex:None,
+            vertex_attribs:vertex_attribs,
+            instance_attribs:Vec::new(),
+            uniform_attribs:uniform_attribs,
+            vertex_size:vertex_size,
+            vertex_attrib_offsets:offsets,
+            verticies_chunk_min_size:verticies_chunk_min_size,
+            verticies_chunk_grow_factor:verticies_grow_factor,
+            verticies_chunk_max_size:verticies_chunk_max_size,
+            indicies_chunk_min_size:indicies_chunk_min_size,
+            indicies_chunk_grow_factor:indicies_grow_factor,
+            indicies_chunk_max_size:indicies_chunk_max_size
+        }
+    }
+
+    pub(super) fn setup_program(&self, gl:&WebGl2RenderingContext) -> WebGlProgram {
         create_program_from_src(gl, &self.vertex_shader, &self.fragment_shader)
     }
 
-    pub(super) fn setup_arrs(&self, gl:&WebGl2RenderingContext, verticies:&Vec<f32>, indicies:&Vec<u16>, program:&WebGlProgram, verticies_size:usize, indicies_size:usize) -> GlBuffers {
+    pub(super) fn setup_arrs(&self, gl:&WebGl2RenderingContext, verticies:&Vec<u8>, indicies:&Vec<u16>, program:&WebGlProgram, verticies_size:usize, indicies_size:usize) -> GlBuffers {
         let vao = gl.create_vertex_array().expect_throw("Error creating VAO");
         gl.bind_vertex_array(Some(&vao));
 
@@ -59,13 +187,13 @@ impl RenderType {
         gl.bind_buffer(WebGl2RenderingContext::ARRAY_BUFFER, Some(&vbo));
         unsafe {
             let buffer_view = match &self.instanced {
-                None => js_sys::Float32Array::view(&verticies),
-                Some(instanced_data) => js_sys::Float32Array::view(&instanced_data.verticies)
+                None => js_sys::Uint8Array::view(&verticies),
+                Some(instanced_data) => js_sys::Uint8Array::view(&instanced_data.verticies)
             };
             if verticies_size == verticies.len() {
                 gl.buffer_data_with_array_buffer_view(WebGl2RenderingContext::ARRAY_BUFFER, &buffer_view, WebGl2RenderingContext::DYNAMIC_DRAW);
             } else {
-                gl.buffer_data_with_i32(WebGl2RenderingContext::ARRAY_BUFFER, (verticies_size*mem::size_of::<f32>()) as i32, WebGl2RenderingContext::DYNAMIC_DRAW);
+                gl.buffer_data_with_i32(WebGl2RenderingContext::ARRAY_BUFFER, verticies_size as i32, WebGl2RenderingContext::DYNAMIC_DRAW);
                 gl.buffer_sub_data_with_i32_and_array_buffer_view(WebGl2RenderingContext::ARRAY_BUFFER, 0, &buffer_view);
             }
         }
@@ -103,7 +231,7 @@ impl RenderType {
                 gl.bind_buffer(WebGl2RenderingContext::ARRAY_BUFFER, Some(&instanced_buffer_object));
 
                 unsafe {
-                    let buffer_view = js_sys::Float32Array::view(&verticies);
+                    let buffer_view = js_sys::Uint8Array::view(&verticies);
                     gl.buffer_data_with_array_buffer_view(WebGl2RenderingContext::ARRAY_BUFFER, &buffer_view, WebGl2RenderingContext::DYNAMIC_DRAW);
                 }
 
@@ -132,8 +260,12 @@ impl RenderType {
         }
     }
 
-    pub fn get_blank_vertex(&self) -> Vec<f32> {
-        self.blank_vertex.clone()
+    pub(super) fn get_blank_vertex(&self) -> Option<&Vec<u8>> {
+        self.blank_vertex.as_ref()
+    }
+
+    fn calc_v_attrib_offset(&self, name:&str, idx:u16) -> Option<usize> {
+        Some(self.vertex_size*idx as usize + self.vertex_attrib_offsets.get(name)?)
     }
 }
 
@@ -158,22 +290,24 @@ impl Drop for GlBuffers {
 }
 
 impl GlBuffers {
-    pub fn buffer_sub_data(&self, gl:&WebGl2RenderingContext, verticies:&[f32],v_start:usize, indicies:&[u16], i_start:usize) {
-        match &self.instance {
-            None => gl.bind_buffer(WebGl2RenderingContext::ARRAY_BUFFER, Some(&self.vbo)),
-            Some(instance_buffer) => gl.bind_buffer(WebGl2RenderingContext::ARRAY_BUFFER, Some(instance_buffer))
-        };
-
-        unsafe {
-            let buffer_view = js_sys::Float32Array::view(verticies);
-            gl.buffer_sub_data_with_i32_and_array_buffer_view(WebGl2RenderingContext::ARRAY_BUFFER, v_start as i32, &buffer_view)
+    pub fn buffer_sub_data(&self, gl:&WebGl2RenderingContext, verticies:&[u8],v_start:usize, indicies:&[u16], i_start:usize) {
+        if !verticies.is_empty() {
+            match &self.instance {
+                None => gl.bind_buffer(WebGl2RenderingContext::ARRAY_BUFFER, Some(&self.vbo)),
+                Some(instance_buffer) => gl.bind_buffer(WebGl2RenderingContext::ARRAY_BUFFER, Some(instance_buffer))
+            };
+            
+            unsafe {
+                let buffer_view = js_sys::Uint8Array::view(verticies);
+                gl.buffer_sub_data_with_i32_and_array_buffer_view(WebGl2RenderingContext::ARRAY_BUFFER, v_start as i32, &buffer_view)
+            }
         }
 
         if self.instance.is_none() {
             gl.bind_buffer(WebGl2RenderingContext::ELEMENT_ARRAY_BUFFER, Some(&self.ibo));
             unsafe {
                 let buffer_view = js_sys::Uint16Array::view(indicies);
-                gl.buffer_sub_data_with_i32_and_array_buffer_view(WebGl2RenderingContext::ELEMENT_ARRAY_BUFFER, i_start as i32, &buffer_view);
+                gl.buffer_sub_data_with_i32_and_array_buffer_view(WebGl2RenderingContext::ELEMENT_ARRAY_BUFFER, i_start as i32 as i32, &buffer_view);
             }
         }
     }
@@ -203,56 +337,56 @@ impl GlBuffers {
     #[allow(unused)]
     pub fn log_data(&self, gl:&WebGl2RenderingContext, v_count:u32, i_count:u32) {
         //TODO: Check if this causes memory leak
-        let v_dst = Float32Array::new(&ArrayBuffer::new(v_count * 4));
+        let v_dst = Uint8Array::new(&ArrayBuffer::new(v_count * 4));
         let i_dst = Uint16Array::new(&ArrayBuffer::new(i_count * 2));
 
         gl.bind_buffer(WebGl2RenderingContext::ARRAY_BUFFER,Some(&self.vbo));
         gl.bind_buffer(WebGl2RenderingContext::ELEMENT_ARRAY_BUFFER,Some(&self.ibo));
         gl.get_buffer_sub_data_with_i32_and_array_buffer_view_and_dst_offset_and_length(WebGl2RenderingContext::ARRAY_BUFFER,0, &v_dst, 0, v_count);
         gl.get_buffer_sub_data_with_i32_and_array_buffer_view_and_dst_offset_and_length(WebGl2RenderingContext::ELEMENT_ARRAY_BUFFER,0, &i_dst, 0, i_count);
+        
 
         log_str("verticies");
-        log_f32_arr(v_dst);
+        log_u8_as_f32_arr(v_dst);
         log_str("indicies");
         log_u16_arr(i_dst);
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy,Debug)]
 #[allow(unused)]
 pub enum AttributeRole {
     Custom,
     TextureCoordinate
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[allow(unused)]
 pub enum UniformRole {
     Custom,
-    Texture,
     Projection,
     View
 }
 
-#[derive(Clone)]
+#[derive(Clone,Debug)]
 pub struct VertexAttrib {
     pub name:String,
     pub role:AttributeRole,
     pub data_type:ShaderDataTypes,
 }
 
+#[derive(PartialEq, Clone, Hash, Eq, Debug)]
 pub struct UniformAttrib {
     pub name:String,
     pub role:UniformRole
 }
 
-
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 #[allow(unused)]
 pub enum ShaderDataTypes {
     FLOAT,
     FloatVec2,
-    // FLOAT_VEC3,
+    FloatVec3,
     FloatVec4,
     INT,
     // INT_VEC2,
@@ -286,7 +420,8 @@ impl ShaderDataTypes {
             Self::FLOAT => WebGl2RenderingContext::FLOAT,
             Self::INT => WebGl2RenderingContext::INT,
             Self::FloatVec2 => WebGl2RenderingContext::FLOAT,
-            Self::FloatVec4 => WebGl2RenderingContext::FLOAT
+            Self::FloatVec4 => WebGl2RenderingContext::FLOAT,
+            Self::FloatVec3 => WebGl2RenderingContext::FLOAT
         }
     }
 
@@ -295,6 +430,7 @@ impl ShaderDataTypes {
             Self::FLOAT => 4,
             Self::INT => 4,
             Self::FloatVec2 => 8,
+            Self::FloatVec3 => 12,
             Self::FloatVec4 => 16
         }
     }
@@ -303,6 +439,7 @@ impl ShaderDataTypes {
         match self {
             Self::FLOAT | Self::INT => 1,
             Self::FloatVec2 => 2,
+            Self::FloatVec3 => 3,
             Self::FloatVec4 => 4
         }
     }

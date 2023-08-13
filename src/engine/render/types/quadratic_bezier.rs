@@ -1,14 +1,12 @@
 use std::{rc::Rc,f32::consts::{FRAC_PI_4,FRAC_PI_2, TAU, SQRT_2,PI}};
 
-use nalgebra::Vector2;
+use cgmath::{Vector2, InnerSpace, Vector4};
 
-use crate::engine::render::{render_object::{RenderType, VertexAttrib, ShaderDataTypes, RenderObject, AttributeRole}, renderer::{Renderer, MappedRenderObject, UniformBlock}};
+use crate::engine::render::{render_object::{RenderType, VertexAttrib, ShaderDataTypes, RenderObject, AttributeRole}, renderer::{Renderer, RenderObjectAllocation, UniformBlock, VertexData}};
 
 thread_local! {
-    static QUADRATIC_BEZIER_RENDER_TYPE: Rc<RenderType> = Rc::new(RenderType {
-        name:String::from("Quadratic_bezier"),
-        instanced:None,
-        vertex_shader:String::from(
+    static QUADRATIC_BEZIER_RENDER_TYPE: Rc<RenderType> = Rc::new(RenderType::new_batched_growable(
+        String::from(
             "#version 300 es
             
             in vec2 pos;
@@ -37,8 +35,7 @@ thread_local! {
                 color = vColor;
                 fsmooth = vSmooth;
             }"
-        ),
-        fragment_shader:String::from(
+        ),String::from(
             "# version 300 es
             precision highp float;
             // start point
@@ -110,8 +107,8 @@ thread_local! {
                 }
                 FragColor = result;
             }"
-        ),
-        vertex_attribs:vec![
+        ), 
+        vec![
             VertexAttrib { 
                 name: String::from("pos"), 
                 role:AttributeRole::Custom,
@@ -148,25 +145,23 @@ thread_local! {
                 data_type:ShaderDataTypes::FLOAT, 
             },
         ],
-        instance_attribs:Vec::new(),
-        uniform_attribs:Vec::new(),
-        blank_vertex:vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        vertex_size:14,
-        verticies_chunk_min_size:20,
-        verticies_chunk_grow_factor:1.1,
-        verticies_chunk_max_size:2000,
-        indicies_chunk_min_size:1000,
-        indicies_chunk_grow_factor:1.1, 
-        indicies_chunk_max_size:2000,
-    })
+        Vec::new(),
+        Vec::new(),
+        20,
+        2000,
+        1000,
+        2000, 
+        2.0,
+        2.0
+    ));
 }
 
 pub struct QuadraticBezier {
-    obj:MappedRenderObject,
+    obj:RenderObject,
 }
 
 impl QuadraticBezier {
-    pub fn new(renderer:&mut Renderer, points:[Vector2<f32>; 3], color:[f32; 4], thickness:f32, smooth:f32) -> Self {
+    pub fn new(renderer:&mut Renderer, points:[Vector2<f32>; 3], color:Vector4<f32>, thickness:f32, smooth:f32) -> Self {
         let offset = thickness + smooth;
         
         let theta = (points[2].y-points[0].y).atan2(points[2].x-points[0].x);
@@ -176,30 +171,33 @@ impl QuadraticBezier {
         let c:f32 = copposite*((points[1]-m).magnitude()/2.0+offset*2.0);
         let t0 = if copposite == -1.0 { theta+FRAC_PI_2+FRAC_PI_4} else { theta+PI+FRAC_PI_4};
         let t1 = if copposite == -1.0 { theta+FRAC_PI_4 } else { theta+TAU-FRAC_PI_4};
-        let (x0,y0) = (points[0].x+f32::cos(t0)*offset*SQRT_2,points[0].y+f32::sin(t0)*offset*SQRT_2);
-        let (x1,y1) = (points[2].x+f32::cos(t1)*offset*SQRT_2,points[2].y+f32::sin(t1)*offset*SQRT_2);
-        let (x2,y2) = (x0+f32::cos(theta+FRAC_PI_2)*c,y0+f32::sin(theta+FRAC_PI_2)*c);
-        let (x3,y3) = (x1+f32::cos(theta+FRAC_PI_2)*c,y1+f32::sin(theta+FRAC_PI_2)*c);
-
-        let verticies = vec![
-            x0,y0, color[0],color[1],color[2],color[3], thickness, points[0].x,points[0].y,points[1].x,points[1].y,points[2].x,points[2].y, smooth,
-            x1,y1, color[0],color[1],color[2],color[3], thickness, points[0].x,points[0].y,points[1].x,points[1].y,points[2].x,points[2].y, smooth,
-            x2,y2, color[0],color[1],color[2],color[3], thickness, points[0].x,points[0].y,points[1].x,points[1].y,points[2].x,points[2].y, smooth,
-            x3,y3, color[0],color[1],color[2],color[3], thickness, points[0].x,points[0].y,points[1].x,points[1].y,points[2].x,points[2].y, smooth,
-        ];
-
-        let indicies = vec![0,1,3, 3,2,0];
-
-        let render_object = RenderObject {
-            type_id:QUADRATIC_BEZIER_RENDER_TYPE.with(|f| f.clone()),
-            uniforms:UniformBlock::default(),
-            verticies:verticies,
-            indicies:indicies
+        let p0 = Vector2 {
+            x: points[0].x+f32::cos(t0)*offset*SQRT_2,
+            y: points[0].y+f32::sin(t0)*offset*SQRT_2
         };
+        let p1 = Vector2 { 
+            x: points[2].x+f32::cos(t1)*offset*SQRT_2,
+            y: points[2].y+f32::sin(t1)*offset*SQRT_2
+        };
+        let p2 = p0 + Vector2 {x:f32::cos(theta+FRAC_PI_2),y:f32::sin(theta+FRAC_PI_2)}*c;
+        let p3 = p1 + Vector2 {x:f32::cos(theta+FRAC_PI_2),y:f32::sin(theta+FRAC_PI_2)}*c;
 
-        let obj = MappedRenderObject::new(renderer, render_object);
+        let mut render_object = RenderObject::new(QUADRATIC_BEZIER_RENDER_TYPE.with(|f| f.clone()));
 
-        Self { obj:obj }
+        render_object.add_triangle([0,1,3]);
+        render_object.add_triangle([3,2,0]);
+        
+        render_object.set_v_datas(0, "pos", vec![VertexData::FloatVec2(p0),VertexData::FloatVec2(p1),VertexData::FloatVec2(p2),VertexData::FloatVec2(p3)]);
+        render_object.set_v_datas(0,"points1", vec![VertexData::FloatVec2(points[0]),VertexData::FloatVec2(points[0]),VertexData::FloatVec2(points[0]),VertexData::FloatVec2(points[0])]);
+        render_object.set_v_datas(0,"points2", vec![VertexData::FloatVec2(points[1]),VertexData::FloatVec2(points[1]),VertexData::FloatVec2(points[1]),VertexData::FloatVec2(points[1])]);
+        render_object.set_v_datas(0,"points3", vec![VertexData::FloatVec2(points[2]),VertexData::FloatVec2(points[2]),VertexData::FloatVec2(points[2]),VertexData::FloatVec2(points[2])]);
+        render_object.set_v_datas(0, "vColor", vec![VertexData::FloatVec4(color.clone()),VertexData::FloatVec4(color.clone()),VertexData::FloatVec4(color.clone()),VertexData::FloatVec4(color.clone())]);
+        render_object.set_v_datas(0, "vThickness", vec![VertexData::Float(thickness),VertexData::Float(thickness),VertexData::Float(thickness),VertexData::Float(thickness)]);
+        render_object.set_v_datas(0, "vSmooth", vec![VertexData::Float(smooth),VertexData::Float(smooth),VertexData::Float(smooth),VertexData::Float(smooth)]);
+
+        renderer.update(&mut render_object);
+
+        Self { obj:render_object }
     }
 
     pub fn render(&mut self) {
